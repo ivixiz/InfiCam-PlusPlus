@@ -93,10 +93,11 @@ public class ThermalRenderer {
 			float range_max,
 			float sensor_max
 	) {
+		boolean validSensorCeiling = Float.isFinite(sensor_max) && sensor_max > 0.0f;
 		for (int i = 0; i < width * height; i++) {
 			/* clipping the range, or nearly maxing out the sensor
 			   (95% => should catch everything without cutting into the range) */
-			if(temp[i] > range_max || temp[i] > sensor_max*0.95){
+			if(temp[i] > range_max || (validSensorCeiling && temp[i] > sensor_max * 0.95f)){
 				canvasDrawBuffer[i] = 0; //transparent, barber pattern will be seen through
 			} else {
 				float pos = clamp((temp[i] - range_min) / (range_max - range_min),0,1);

@@ -1,5 +1,6 @@
 package be.ntmn.inficam;
 
+import android.annotation.SuppressLint;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -25,6 +26,7 @@ public abstract class USBMonitor extends BroadcastReceiver {
 	private UsbManager manager;
 	private final HashMap<UsbDevice, ConnectCallback> callbacks = new HashMap<>();
 
+	@SuppressLint("UnspecifiedRegisterReceiverFlag")
 	public void start(Context ctx) { /* Recommended use is in onCreate()/onStart(). */
 		this.ctx = ctx;
 		if (!registered) {

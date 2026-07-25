@@ -93,6 +93,7 @@ public class MainActivity extends BaseActivity {
 	private volatile float localCorrection = 0.0f;
 	private volatile int connectGeneration = 0;
 	private volatile boolean suppressCalibrationRequest = false;
+	private volatile boolean acceptCameraSettings = false;
 	private boolean pendingCalibrationAfterThermDialog = false;
 	private boolean calibrationUiActive = false;
 	private volatile boolean overTempLockoutActive = false;
@@ -107,11 +108,12 @@ public class MainActivity extends BaseActivity {
 	private float latestSensorMax = NaN;
 	private long latestFrameSequence = 0;
 	private boolean renderPending = false;
-	private static final boolean RENDER_TIMING_LOGS = false; /* Set to true to log render timing stats every second. */
-	private long renderStatsStartNs = System.nanoTime();
+	private static final boolean RENDER_TIMING_LOGS = true;
+	private long renderStatsStartNs = 0;
 	private long incomingFrameCount = 0;
 	private long renderedFrameCount = 0;
 	private long coalescedFrameCount = 0;
+	private long renderTotalNs = 0;
 	private long renderPaletteTotalNs = 0;
 	private long renderLockCanvasTotalNs = 0;
 	private long renderUnlockCanvasTotalNs = 0;
@@ -309,6 +311,8 @@ public class MainActivity extends BaseActivity {
 			public void onFrame(InfiCam.FrameInfo fi, float[] temp) {
 				/* Note this is called from another thread. */
 				synchronized (frameLock) {
+					if (renderStatsStartNs == 0)
+						renderStatsStartNs = System.nanoTime();
 					if (latestTempBuffer.length != temp.length)
 						latestTempBuffer = new float[temp.length];
 					System.arraycopy(temp, 0, latestTempBuffer, 0, temp.length);
@@ -358,6 +362,7 @@ public class MainActivity extends BaseActivity {
 	private final Runnable renderFrameRunnable = new Runnable() {
 		@Override
 		public void run() {
+			long renderStartNs = System.nanoTime();
 			long sequence;
 			float sensorMax;
 			synchronized (frameLock) {
@@ -395,6 +400,7 @@ public class MainActivity extends BaseActivity {
 					settingsPalette.paletteMap, renderTempBuffer, rangeMin, rangeMax, sensorMax);
 
 			RenderTimings timings = handleFrame(renderOverlayData);
+			timings.totalNs = System.nanoTime() - renderStartNs;
 			logRenderTimings(sequence, timings);
 		}
 	};
@@ -407,6 +413,7 @@ public class MainActivity extends BaseActivity {
 	}
 
 	private static class RenderTimings {
+		long totalNs;
 		long inputDrawNs;
 		long thruSwapNs;
 		long screenSwapNs;
@@ -435,6 +442,7 @@ public class MainActivity extends BaseActivity {
 	private void logRenderTimings(long renderedSequence, RenderTimings timings) {
 		synchronized (frameLock) {
 			renderedFrameCount++;
+			renderTotalNs += timings.totalNs;
 			renderPaletteTotalNs += thermalRenderer.lastPaletteNs;
 			renderLockCanvasTotalNs += thermalRenderer.lastLockCanvasNs;
 			renderUnlockCanvasTotalNs += thermalRenderer.lastUnlockCanvasNs;
@@ -451,15 +459,17 @@ public class MainActivity extends BaseActivity {
 
 			long nowNs = System.nanoTime();
 			long elapsedNs = nowNs - renderStatsStartNs;
-			if (RENDER_TIMING_LOGS && elapsedNs >= 1000000000L) {
+			if (RENDER_TIMING_LOGS && renderStatsStartNs != 0 &&
+					elapsedNs >= 1000000000L) {
 				double seconds = elapsedNs / 1000000000.0;
 				Log.d("inficam", String.format(Locale.US,
 						"Render stats: incoming=%.1ffps rendered=%.1ffps coalesced=%d " +
-								"palette=%.2fms lockCanvas=%.2fms unlockCanvas=%.2fms " +
+								"total=%.2fms palette=%.2fms lockCanvas=%.2fms unlockCanvas=%.2fms " +
 								"inputDraw=%.2fms thruSwap=%.2fms screenSwap=%.2fms recordSwap=%.2fms",
 						incomingFrameCount / seconds,
 						renderedFrameCount / seconds,
 						coalescedFrameCount,
+						avgMs(renderTotalNs, renderedFrameCount),
 						avgMs(renderPaletteTotalNs, renderedFrameCount),
 						avgMs(renderLockCanvasTotalNs, renderedFrameCount),
 						avgMs(renderUnlockCanvasTotalNs, renderedFrameCount),
@@ -471,6 +481,7 @@ public class MainActivity extends BaseActivity {
 				incomingFrameCount = 0;
 				renderedFrameCount = 0;
 				coalescedFrameCount = 0;
+				renderTotalNs = 0;
 				renderPaletteTotalNs = 0;
 				renderLockCanvasTotalNs = 0;
 				renderUnlockCanvasTotalNs = 0;
@@ -490,6 +501,25 @@ public class MainActivity extends BaseActivity {
 		}
 	}
 
+	private void resetRenderStats() {
+		synchronized (frameLock) {
+			renderStatsStartNs = 0;
+			incomingFrameCount = 0;
+			renderedFrameCount = 0;
+			coalescedFrameCount = 0;
+			renderTotalNs = 0;
+			renderPaletteTotalNs = 0;
+			renderLockCanvasTotalNs = 0;
+			renderUnlockCanvasTotalNs = 0;
+			renderInputDrawTotalNs = 0;
+			renderThruSwapTotalNs = 0;
+			renderScreenSwapTotalNs = 0;
+			renderRecordSwapTotalNs = 0;
+			renderScreenSwapCount = 0;
+			renderRecordSwapCount = 0;
+		}
+	}
+
 	private float getCorrectedMaxTempClipping(float maxTempClipping) {
 		if (!applyLocalCorrection)
 			return maxTempClipping;
@@ -501,21 +531,24 @@ public class MainActivity extends BaseActivity {
 			@Override
 			/* Note this is called from another thread. */
 			public void onSettings(InfiCam.CamSettings camSettings) {
-				if(settingsTherm == null){
+				if(settingsTherm == null || !acceptCameraSettings){
 					return;
 				}
-				synchronized (frameLock) {
-					//run on main thread for UI changes
-					handler.post(() -> settingsTherm.setSettings(
-							camSettings.emissivity,
-							camSettings.temp_reflected,
-							camSettings.temp_air,
-							camSettings.humidity,
-							camSettings.distance,
-							camSettings.correction,
-							camSettings.range
-					));
-				}
+				final int token = connectGeneration;
+				final float emissivity = camSettings.emissivity;
+				final float tempReflected = camSettings.temp_reflected;
+				final float tempAir = camSettings.temp_air;
+				final float humidity = camSettings.humidity;
+				final int distance = camSettings.distance;
+				final float correction = camSettings.correction;
+				final int range = camSettings.range;
+				handler.post(() -> {
+					if(token != connectGeneration || disconnecting || !acceptCameraSettings)
+						return;
+					settingsTherm.setSettings(
+						emissivity, tempReflected, tempAir, humidity,
+						distance, correction, range);
+				});
 			}
 		};
 
@@ -580,11 +613,16 @@ public class MainActivity extends BaseActivity {
 				handler.post(() -> {
 					if (!isCurrentConnection(token, conn))
 						return;
+					acceptCameraSettings = true;
 					setCalibrationUi(false);
 					messageView.clearMessage();
 					messageView.showMessage(getString(R.string.msg_connected,
 							dev.getProductName()));
 					/* We are ready to accept frames */
+					resetRenderStats();
+					Log.i("inficam", String.format(Locale.US,
+							"Frame diagnostics started: connection=%d size=%dx%d",
+							token, width, height));
 					infiCam.setFrameCallback(frameCallback);
 				});
 			} catch (Exception e) {
@@ -1159,6 +1197,7 @@ public class MainActivity extends BaseActivity {
 	}
 
 	private void disconnect() {
+		acceptCameraSettings = false;
 		connectGeneration++;
 		setCalibrationUi(false);
 		overTempLockoutActive = false;

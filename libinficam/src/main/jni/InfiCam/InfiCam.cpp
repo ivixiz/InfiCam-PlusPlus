@@ -56,21 +56,27 @@ static float temperature_variance(const float *temp, const int count, int &valid
 InfiCam::InfiCam(const void * p_inficam_jni): inficam_jni(p_inficam_jni){
 	if(pthread_mutex_init(&shutter_mutex, nullptr) ||
 	   pthread_cond_init(&shutter_request, nullptr) ||
-	   pthread_create(&shutter_thread, nullptr, shutter_thread_func, (void *) this) ||
 	   pthread_mutex_init(&command_mutex, nullptr) ||
-		pthread_mutex_init(&cal_mutex, nullptr) ||
-		pthread_cond_init(&cal_request, nullptr))
+	   pthread_mutex_init(&cal_mutex, nullptr) ||
+	   pthread_cond_init(&cal_request, nullptr) ||
+	   pthread_create(&shutter_thread, nullptr, shutter_thread_func, (void *) this))
 	{
-		__android_log_assert(nullptr, LOG_TAG,"pthread did big bad"); // *kaboom*
+		__android_log_assert(nullptr, LOG_TAG,"pthread initialization failed");
 	}
 }
 
 InfiCam::~InfiCam(){
+	disconnect();
 	exit_all_theads = true;
 	pthread_mutex_lock(&shutter_mutex);
 	pthread_cond_signal(&shutter_request);
 	pthread_mutex_unlock(&shutter_mutex);
 	pthread_join(shutter_thread, nullptr);
+	pthread_cond_destroy(&shutter_request);
+	pthread_mutex_destroy(&shutter_mutex);
+	pthread_mutex_destroy(&command_mutex);
+	pthread_cond_destroy(&cal_request);
+	pthread_mutex_destroy(&cal_mutex);
 }
 
 
@@ -83,15 +89,36 @@ int InfiCam::connect(const int uvc_fd, int & output_width, int & output_height, 
 	if (dev.connect(uvc_fd, width, height, use_raw_logic)) {
 		return 2;
 	}
-	if(!use_raw_logic) __android_log_assert(nullptr, nullptr,"WTF");
 	cam_settings.use_raw_logic = use_raw_logic; //atomics, so we have to do it here
+	const bool supported_width = width == 240 || width == 256 || width == 384 || width == 640;
+	if(height <= 4 || !supported_width || (use_raw_logic && (width != 256 || height != 196))){
+		LOGE("Unsupported camera stream layout: %dx%d raw=%d\n", width, height, use_raw_logic);
+		dev.disconnect();
+		return 3;
+	}
 
 	infiframe = new InfiFrame(cam_settings, width, height);
 	packet_reconstruction_buffer = new uint16_t[infiframe->width*infiframe->stream_height];
+	nonraw_frames_ready = false;
+	nonraw_table_ready = false;
 
 	output_width = infiframe->width;
 	output_height = infiframe->vision_height;
 	this->settings_callback = p_settings_callback;
+
+	/*
+	 * V1 cameras can select temperature mode before streaming. Keep this before
+	 * dev.stream_start(): otherwise their first callbacks still contain the previous
+	 * UVC mode and are neither valid 14-bit pixels nor valid settings metadata.
+	 *
+	 * V2/raw cameras intentionally select the mode after streaming because their
+	 * calibration data is delivered through the stream.
+	 */
+	if(!cam_settings.use_raw_logic){
+		pthread_mutex_lock(&command_mutex);
+		dev.set_zoom_abs(CMD_MODE_TEMP);
+		pthread_mutex_unlock(&command_mutex);
+	}
 
 	LOGD("Connected\n");
 	return 0;
@@ -104,7 +131,7 @@ void InfiCam::disconnect(){
 
 	delete infiframe;
 	infiframe = nullptr;
-	delete packet_reconstruction_buffer;
+	delete[] packet_reconstruction_buffer;
 	packet_reconstruction_buffer = nullptr;
 }
 
@@ -139,6 +166,11 @@ void InfiCam::set_raw_validation_shutter(bool closed){
 int InfiCam::stream_start(frame_callback_t *cb) {
 	LOGD("Attempting to start stream\n");
 	frame_callback = cb;
+	frame_stats_start = steady_clock::now();
+	received_frame_count = 0;
+	delivered_frame_count = 0;
+	nonraw_frames_ready = false;
+	nonraw_table_ready = false;
 	if (dev.stream_start(uvc_frame_callback, this,
 						 infiframe->width, infiframe->stream_height,
 						 cam_settings.use_raw_logic)) {
@@ -157,10 +189,19 @@ int InfiCam::stream_start(frame_callback_t *cb) {
 		pthread_mutex_unlock(&command_mutex);
 	}
 
-	LOGD("Sending temp mode command\n");
-	pthread_mutex_lock(&command_mutex);
-	dev.set_zoom_abs(CMD_MODE_TEMP);
-	pthread_mutex_unlock(&command_mutex);
+	if(cam_settings.use_raw_logic){
+		LOGD("Sending temp mode command\n");
+		pthread_mutex_lock(&command_mutex);
+		dev.set_zoom_abs(CMD_MODE_TEMP);
+		pthread_mutex_unlock(&command_mutex);
+	} else {
+		/*
+		 * CMD_MODE_TEMP was already sent before starting the stream. Frames
+		 * received during the settling delay were deliberately ignored; frames
+		 * after this point may initialize the V1 temperature table.
+		 */
+		nonraw_frames_ready = true;
+	}
 
 	//If the calibration isn't fully loaded after a while, try again from zero. Modified from the official implementation.
 	if(cam_settings.use_raw_logic){
@@ -198,6 +239,8 @@ int InfiCam::stream_start(frame_callback_t *cb) {
 void InfiCam::stream_stop() {
 	if(!is_ready) { return; } //not running
 	is_ready = false;
+	nonraw_frames_ready = false;
+	nonraw_table_ready = false;
 	is_calibrating = false;
 	is_shutter_calibrating = false;
 	suppress_calibration = false;
@@ -205,7 +248,13 @@ void InfiCam::stream_stop() {
 	range_validation_active = false;
 	range_validation_started = false;
 	range_validation_retry_count = 0;
-	set_raw_validation_shutter(false);
+	pthread_mutex_lock(&shutter_mutex);
+	range_validation_holds_shutter = false;
+	keep_shutter_closed = false;
+	pthread_mutex_unlock(&shutter_mutex);
+	pthread_mutex_lock(&cal_mutex);
+	pthread_cond_broadcast(&cal_request);
+	pthread_mutex_unlock(&cal_mutex);
 	dev.stream_stop();
 }
 
@@ -224,12 +273,20 @@ void * InfiCam::shutter_thread_func(void * arg){
 			pthread_mutex_unlock(&t->shutter_mutex);
 			break;
 		}
+		if(!t->is_ready){
+			pthread_mutex_unlock(&t->shutter_mutex);
+			continue;
+		}
+		pthread_mutex_lock(&t->command_mutex);
 		t->dev.set_zoom_abs(CMD_SHUTTER);
+		pthread_mutex_unlock(&t->command_mutex);
 
 		while(t->keep_shutter_closed){
 			pthread_mutex_unlock(&t->shutter_mutex);
 			Utils::sleep(100);
-			t->dev.set_zoom_abs(CMD_SHUTTER);
+			pthread_mutex_lock(&t->command_mutex);
+		t->dev.set_zoom_abs(CMD_SHUTTER);
+		pthread_mutex_unlock(&t->command_mutex);
 			pthread_mutex_lock(&t->shutter_mutex);
 		}
 
@@ -328,6 +385,33 @@ bool InfiCam::reset_cal_on_bad_data(InfiCam * t, const uint16_t * frame){
 void InfiCam::uvc_frame_callback(uvc_frame_t *frame, void *user_ptr){
 	auto * t = (InfiCam*) user_ptr;
 	uint16_t * final_frame;
+	t->received_frame_count++;
+	const int stats_elapsed_ms = Utils::ms_since(t->frame_stats_start);
+	if(stats_elapsed_ms >= 1000){
+		const double stats_seconds = (double)stats_elapsed_ms / 1000.0;
+		LOGI("Native frame stats: received=%.1ffps delivered=%.1ffps raw=%d\n",
+			 (double)t->received_frame_count / stats_seconds,
+			 (double)t->delivered_frame_count / stats_seconds,
+			 (int)t->cam_settings.use_raw_logic);
+		t->frame_stats_start = steady_clock::now();
+		t->received_frame_count = 0;
+		t->delivered_frame_count = 0;
+	}
+
+	if(!t->cam_settings.use_raw_logic){
+		const size_t expected_bytes =
+				(size_t)t->infiframe->width *
+				(size_t)t->infiframe->stream_height *
+				sizeof(uint16_t);
+		if(!t->nonraw_frames_ready.load()){
+			return;
+		}
+		if(frame->data == nullptr || frame->data_bytes < expected_bytes){
+			LOGW("Ignoring partial V1 frame (%zu/%zu bytes)\n",
+					(size_t)frame->data_bytes, expected_bytes);
+			return;
+		}
+	}
 
 
 	if(t->cam_settings.use_raw_logic){ //Only the T2x V2 generation has this. Decoding uses fixed sizes.
@@ -336,10 +420,11 @@ void InfiCam::uvc_frame_callback(uvc_frame_t *frame, void *user_ptr){
 		const int STRIDE =	0x380C; //marker to marker distance
 		const int PAYLOAD = 0x3800; //normal data size
 
-		if(frame->data_bytes < 7*STRIDE){ //We may have junk left-over on connect
-			LOGW("Ignoring partial frame (%d/%d)\n",frame->data_bytes,STRIDE*7-1);
+		if(frame->data == nullptr || frame->data_bytes < (size_t)(7*STRIDE)){ //We may have junk left-over on connect
+			LOGW("Ignoring partial frame (%zu/%d)\n",(size_t)frame->data_bytes,STRIDE*7);
 			return;
 		}
+		bool complete_image = true;
 		for(int i = 0 ; i < 7 ; i++){
 			int current_marker_offset = PREAMBLE+i*STRIDE;
 			uint16_t val = ((uint8_t*)frame->data)[current_marker_offset];
@@ -348,6 +433,7 @@ void InfiCam::uvc_frame_callback(uvc_frame_t *frame, void *user_ptr){
 					   (uint8_t*)frame->data+current_marker_offset+HEADER,
 					   PAYLOAD);
 			} else if (val == 2) { //k calibration data packet
+				complete_image = false;
 				LOGD("Received calibration packet %d/%d\n",t->infiframe->gain_k_line_counter+1,t->infiframe->vision_height);
 				if(t->infiframe->gain_k_line_counter < t->infiframe->vision_height){ //calibration data is not fully downloaded
 					memcpy((uint8_t*)t->infiframe->gain_k_buffer+(t->infiframe->gain_k_line_counter * t->infiframe->width*sizeof(uint16_t)),
@@ -359,16 +445,46 @@ void InfiCam::uvc_frame_callback(uvc_frame_t *frame, void *user_ptr){
 				}
 			} else {
 				LOGW("Corrupted data packet ! marker %d at position %d\n",val,current_marker_offset);
+				complete_image = false;
 			}
+		}
+		if(!complete_image){
+			return;
 		}
 
 		final_frame = t->packet_reconstruction_buffer;
 	} else {
 		final_frame = (uint16_t *)frame->data;
 
+		/*
+		 * V1 temperature pixels are 14-bit. Reject the entire frame before
+		 * reading its metadata: a stale mode-transition frame would otherwise
+		 * publish nonsensical camera settings and index outside the table.
+		 */
+		const int vision_pixels = t->infiframe->width*t->infiframe->vision_height;
+		for(int i = 0 ; i < vision_pixels ; i++){
+			if(final_frame[i] > 0x3FFF){
+				LOGW("Ignoring invalid V1 frame: pixel %d is 0x%04x\n",
+					 i, final_frame[i]);
+				return;
+			}
+		}
+
 		CameraSettings ref_cam_settings = t->cam_settings;
-		t->infiframe->updateSettings(final_frame); //Check registers in the frame to see if camera settings changed
-		if(ref_cam_settings != t->cam_settings){ //Signal the app that the camera has new settings.
+		const uint16_t *metadata = final_frame + vision_pixels;
+		if(!t->infiframe->updateSettings(metadata)){
+			LOGW("Ignoring V1 frame with invalid settings metadata.\n");
+			return;
+		}
+		const bool settings_changed = ref_cam_settings != t->cam_settings;
+		if(!t->nonraw_table_ready || settings_changed){
+			if(!t->infiframe->updateTable(final_frame)){
+				LOGW("Ignoring V1 frame with invalid thermometry metadata.\n");
+				return;
+			}
+			t->nonraw_table_ready = true;
+		}
+		if(settings_changed){ //Signal the app that the camera has new settings.
 			t->settings_callback(t->inficam_jni, t->cam_settings);
 		}
 	}
@@ -549,6 +665,7 @@ void InfiCam::uvc_frame_callback(uvc_frame_t *frame, void *user_ptr){
 			return;
 		}
 
+		t->delivered_frame_count++;
 		t->frame_callback(t->inficam_jni, temp_array, t->cam_settings); //callback the app with the temperature frame
 	}
 }
@@ -565,7 +682,7 @@ void InfiCam::set_float(const int addr, const float val){
 	dev.set_zoom_abs((((addr + 1) & 0xFF) << 8) | p[1]);
 	dev.set_zoom_abs((((addr + 2) & 0xFF) << 8) | p[2]);
 	dev.set_zoom_abs((((addr + 3) & 0xFF) << 8) | p[3]);
-	pthread_mutex_lock(&command_mutex);
+	pthread_mutex_unlock(&command_mutex);
 }
 
 void InfiCam::set_ushort(const int addr, const uint16_t val) {
@@ -575,9 +692,7 @@ void InfiCam::set_ushort(const int addr, const uint16_t val) {
 	pthread_mutex_lock(&command_mutex);
 	dev.set_zoom_abs((((addr + 0) & 0xFF) << 8) | p[0]);
 	dev.set_zoom_abs((((addr + 1) & 0xFF) << 8) | p[1]);
-	dev.set_zoom_abs((((addr + 2) & 0xFF) << 8) | p[2]);
-	dev.set_zoom_abs((((addr + 3) & 0xFF) << 8) | p[3]);
-	pthread_mutex_lock(&command_mutex);
+	pthread_mutex_unlock(&command_mutex);
 }
 
 
@@ -588,34 +703,40 @@ std::vector<std::array<float,2>> InfiCam::get_ranges(){
 
 void InfiCam::set_range(const int range) {
 	if(!is_ready) { return; }
+	if(range < 0 || range > 1){
+		LOGE("Invalid temperature range id %d.\n", range);
+		return;
+	}
 
-	LOGD("set_range %d\n",(int)cam_settings.temperature_range);
-
-	if(range < 0 || range > 1){ __android_log_assert(nullptr,"libinficam","BAD temperature range");}
-	if(cam_settings.use_raw_logic && range == cam_settings.temperature_range){
-		LOGD("Ignoring.");
+	const auto requested_range = (CameraTemperatureRange)range;
+	LOGD("set_range %d (cur %d)\n", range, (int)cam_settings.temperature_range);
+	if(cam_settings.use_raw_logic && requested_range == cam_settings.temperature_range){
+		LOGD("Ignoring.\n");
 		return;
 	}
 
 	pthread_mutex_lock(&command_mutex);
-	dev.set_zoom_abs((range == CameraTemperatureRange::RANGE_120_400) ? CMD_RANGE_400 : CMD_RANGE_120);
+	dev.set_zoom_abs((requested_range == CameraTemperatureRange::RANGE_120_400) ? CMD_RANGE_400 : CMD_RANGE_120);
 	pthread_mutex_unlock(&command_mutex);
 
 	settle_start_time = steady_clock::now();
 	refresh_auto_shut_interval();
 
-	if(cam_settings.use_raw_logic){
-		if(cam_settings.temperature_range != (CameraTemperatureRange)range){
-			cam_settings.temperature_range = (CameraTemperatureRange)range;
+	if(cam_settings.temperature_range != requested_range){
+		cam_settings.temperature_range = requested_range;
+		if(cam_settings.use_raw_logic){
 			start_raw_frame_validation();
-			settings_callback(inficam_jni, cam_settings);
+		} else {
+			nonraw_table_ready = false;
 		}
+		settings_callback(inficam_jni, cam_settings);
 	}
 }
 
 
 void InfiCam::set_correction(const float corr) {
 	if(!is_ready) { return; }
+	if(!std::isfinite(corr)){ LOGE("Ignoring non-finite correction.\n"); return; }
 	LOGD("set_correction %f (cur %f)\n",corr,(float)cam_settings.temperature_correction);
 	if(cam_settings.use_raw_logic){
 		if(cam_settings.temperature_correction != corr){
@@ -629,6 +750,7 @@ void InfiCam::set_correction(const float corr) {
 
 void InfiCam::set_temp_reflected(const float t_ref) {
 	if(!is_ready) { return; }
+	if(!std::isfinite(t_ref) || t_ref <= -273.15f){ LOGE("Ignoring invalid reflected temperature.\n"); return; }
 	LOGD("set_temp_reflected %f (cur %f)f\n",t_ref,(float)cam_settings.reflection_temperature);
 	if(cam_settings.use_raw_logic){
 		if(cam_settings.reflection_temperature != t_ref){
@@ -642,6 +764,7 @@ void InfiCam::set_temp_reflected(const float t_ref) {
 
 void InfiCam::set_temp_air(const float t_air) {
 	if(!is_ready) { return; }
+	if(!std::isfinite(t_air) || t_air <= -273.15f){ LOGE("Ignoring invalid air temperature.\n"); return; }
 	LOGD("set_temp_air %f (cur %f)\n",t_air,(float)cam_settings.air_temperature);
 	if(cam_settings.use_raw_logic){
 		if(cam_settings.air_temperature != t_air){
@@ -655,27 +778,31 @@ void InfiCam::set_temp_air(const float t_air) {
 
 void InfiCam::set_humidity(const float humi) {
 	if(!is_ready) { return; }
-	LOGD("set_humidity %f (cur %f)\n",humi,(float)cam_settings.humidity);
+	if(!std::isfinite(humi)){ LOGE("Ignoring non-finite humidity.\n"); return; }
+	const float safe_humi = std::clamp(humi, 0.0f, 1.0f);
+	LOGD("set_humidity %f (normalized %f, cur %f)\n",humi,safe_humi,(float)cam_settings.humidity);
 	if(cam_settings.use_raw_logic){
-		if(cam_settings.humidity != humi){
-			cam_settings.humidity = humi;
+		if(cam_settings.humidity != safe_humi){
+			cam_settings.humidity = safe_humi;
 			settings_callback(inficam_jni, cam_settings);
 		} else {LOGD("Ignoring\n");}
 	} else {
-		set_float(ADDR_HUMIDITY, humi);
+		set_float(ADDR_HUMIDITY, safe_humi);
 	}
 }
 
 void InfiCam::set_emissivity(const float emi) {
 	if(!is_ready) { return; }
-	LOGD("set_emissivity %f (cur %f)\n",emi,(float) cam_settings.emissivity);
+	const float safe_emi = std::isfinite(emi) ? std::clamp(emi, 0.01f, 1.0f) : 0.95f;
+	LOGD("set_emissivity %f (normalized %f, cur %f)\n",
+			emi, safe_emi, (float) cam_settings.emissivity);
 	if(cam_settings.use_raw_logic){
-		if(cam_settings.emissivity != emi){
-			cam_settings.emissivity = emi;
+		if(cam_settings.emissivity != safe_emi){
+			cam_settings.emissivity = safe_emi;
 			settings_callback(inficam_jni, cam_settings);
 		} else {LOGD("Ignoring\n");}
 	} else {
-		set_float(ADDR_EMISSIVITY, emi);
+		set_float(ADDR_EMISSIVITY, safe_emi);
 	}
 }
 

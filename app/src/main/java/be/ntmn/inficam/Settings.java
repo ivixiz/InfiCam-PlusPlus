@@ -76,15 +76,15 @@ public abstract class Settings extends LinearLayout {
 
 		void setTo(boolean value) {
 			not_user = true;
+			boolean changed = box.isChecked() != value;
 			box.setChecked(value);
 			not_user = false;
-			onSet(value);
+			if(!changed) onSet(value);
 		}
 
 		@Override
 		void load() {
 			boolean value = sp.getBoolean(name, def);
-			box.setChecked(value);
 			setTo(value);
 		}
 
@@ -142,13 +142,23 @@ public abstract class Settings extends LinearLayout {
 
 		void setTo(int value) {
 			not_user = true;
+			boolean changed = false;
 			try {
-				((RadioButton) rg.getChildAt(value + 1)).setChecked(true);
+				RadioButton button = (RadioButton) rg.getChildAt(value + 1);
+				changed = !button.isChecked();
+				button.setChecked(true);
+				if(!changed) current = value;
 			} catch (Exception e) {
 				value = def;
+				ed.putInt(name, value);
+				ed.commit();
+				RadioButton button = (RadioButton) rg.getChildAt(value + 1);
+				changed = !button.isChecked();
+				button.setChecked(true);
+				if(!changed) current = value;
 			}
 			not_user = false;
-			onSet(value);
+			if(!changed) onSet(value);
 		}
 		@Override
 		void load() {
@@ -225,13 +235,23 @@ public abstract class Settings extends LinearLayout {
 
 		void setTo(int value) {
 			not_user = true;
+			boolean changed = false;
 			try {
-				((RadioButton) rg.getChildAt(value + 1)).setChecked(true);
+				RadioButton button = (RadioButton) rg.getChildAt(value + 1);
+				changed = !button.isChecked();
+				button.setChecked(true);
+				if(!changed) current = value;
 			} catch (Exception e) {
 				value = def;
+				ed.putInt(name, value);
+				ed.commit();
+				RadioButton button = (RadioButton) rg.getChildAt(value + 1);
+				changed = !button.isChecked();
+				button.setChecked(true);
+				if(!changed) current = value;
 			}
 			not_user = false;
-			onSet(value);
+			if(!changed) onSet(value);
 		}
 		@Override
 		void load() {
@@ -316,14 +336,22 @@ public abstract class Settings extends LinearLayout {
 		}
 
 		void setTo(int value) {
-			this.value = value;
-			slider.setProgress(value);
-			setText(value);
-			onSet(value);
+			if(slider.getProgress() + min == value){
+				this.value = value;
+				setText(value);
+				onSet(value);
+			} else {
+				slider.setProgress(value);
+			}
 		}
 		@Override
 		void load() {
-			int value = sp.getInt(name, def);
+			int storedValue = sp.getInt(name, def);
+			int value = (storedValue < min || storedValue > max) ? def : storedValue;
+			if (value != storedValue) {
+				ed.putInt(name, value);
+				ed.commit();
+			}
 			setTo(value);
 		}
 

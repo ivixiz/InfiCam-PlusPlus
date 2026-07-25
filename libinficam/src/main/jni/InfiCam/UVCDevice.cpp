@@ -170,6 +170,14 @@ int UVCDevice::stream_start(uvc_frame_callback_t *cb, void *user_ptr, const int 
 	/* 0 FPS means any. */
 	if (uvc_get_stream_ctrl_format_size(uvc_devh, &ctrl, format, width, height, 0))
 		return 2;
+	if(ctrl.dwFrameInterval > 0){
+		LOGI("UVC stream negotiated: %dx%d interval=%u (%.2f fps) frame=%u payload=%u raw=%d\n",
+			 width, height, ctrl.dwFrameInterval,
+			 10000000.0 / (double)ctrl.dwFrameInterval,
+			 ctrl.dwMaxVideoFrameSize, ctrl.dwMaxPayloadTransferSize, (int)use_raw_logic);
+	} else {
+		LOGE("UVC stream negotiated an invalid zero frame interval\n");
+	}
 	if (uvc_start_streaming(uvc_devh, &ctrl, cb, user_ptr, 0, use_raw_logic)) //patched, raw frame devices need the uvc frame metadata to be kept.
 		return 3;
 	streaming = 1;

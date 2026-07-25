@@ -51,7 +51,7 @@ class InfiCam {
 	typedef void (settings_callback_t)(const void *inficam_jni, const CameraSettings& cam_settings);
 
 private:
-	bool exit_all_theads = false;
+	std::atomic_bool exit_all_theads = false;
 
 	//data
 	const void * inficam_jni;
@@ -61,7 +61,9 @@ private:
 	steady_clock::time_point calibration_shutter_time; //time since start of last calibration
 	steady_clock::time_point settle_start_time; //time since last upsetting event (startup, range change)
 	uint16_t* packet_reconstruction_buffer = nullptr; //temporary, only used for raw sensor
-	bool is_ready = false; //is camera streaming, initialized and ready to accept commands
+	std::atomic_bool is_ready = false; //is camera streaming, initialized and ready to accept commands
+	std::atomic_bool nonraw_frames_ready = false; //V1 frames are unsafe until temperature mode has settled
+	std::atomic_bool nonraw_table_ready = false; //V1 conversion table is initialized from the first valid frame
 	std::atomic_bool is_calibrating = false; //is in the process of calibrating
 	std::atomic_bool is_shutter_calibrating = false; //manual/auto shutter calibration is running
 	std::atomic_bool suppress_calibration = false; //temporarily delay calibration requests
@@ -75,6 +77,9 @@ private:
 	float range_validation_start_variance = NAN;
 	int range_validation_start_valid_count = 0;
 	bool range_validation_holds_shutter = false;
+	steady_clock::time_point frame_stats_start;
+	uint64_t received_frame_count = 0;
+	uint64_t delivered_frame_count = 0;
 
 	//synchronisation
 	pthread_mutex_t command_mutex{};

@@ -148,7 +148,7 @@ static void *jthread_frame_run(void *a) {
 		setIntVar(env, fi, "width", t->width);
 		setIntVar(env, fi, "height", t->height);
 		setIntVar(env, cm, "range", (int)t->jthread_frame_cam_settings.temperature_range);
-		setFloatVar(env, cm, "max_temp_clipping", t->jthread_settings_cam_settings.max_temperature_clipping);
+		setFloatVar(env, cm, "max_temp_clipping", t->jthread_frame_cam_settings.max_temperature_clipping);
 		setFloatVar(env, cm, "correction", t->jthread_frame_cam_settings.temperature_correction);
 		setFloatVar(env, cm, "temp_reflected", t->jthread_frame_cam_settings.reflection_temperature);
 		setFloatVar(env, cm, "temp_air", t->jthread_frame_cam_settings.air_temperature);
@@ -238,7 +238,6 @@ extern "C" {
 
 	JNIEXPORT jlong Java_be_ntmn_libinficam_InfiCam_nativeNew(JNIEnv *env, jclass cls, jobject self) {
 		auto *t = new InfiCamJNI(env, self);
-		/* Make sure the mutexes etc are initialized before starting the thread. */
 		if (pthread_mutex_init(&t->jthread_frame_mutex, nullptr)) {
 			delete t;
 			return 0;
@@ -246,28 +245,41 @@ extern "C" {
 		if (pthread_cond_init(&t->jthread_frame_cond, nullptr)) {
 			pthread_mutex_destroy(&t->jthread_frame_mutex);
 			delete t;
-			return 1;
-		}
-		if (pthread_create(&t->jthread_frame, nullptr, jthread_frame_run, (void *) t)) {
-			pthread_mutex_destroy(&t->jthread_frame_mutex);
-			pthread_cond_destroy(&t->jthread_frame_cond);
-			delete t;
-			return 2;
+			return 0;
 		}
 		if (pthread_mutex_init(&t->jthread_settings_mutex, nullptr)) {
+			pthread_cond_destroy(&t->jthread_frame_cond);
+			pthread_mutex_destroy(&t->jthread_frame_mutex);
 			delete t;
-			return 3;
+			return 0;
 		}
 		if (pthread_cond_init(&t->jthread_settings_cond, nullptr)) {
 			pthread_mutex_destroy(&t->jthread_settings_mutex);
+			pthread_cond_destroy(&t->jthread_frame_cond);
+			pthread_mutex_destroy(&t->jthread_frame_mutex);
 			delete t;
-			return 4;
+			return 0;
+		}
+		if (pthread_create(&t->jthread_frame, nullptr, jthread_frame_run, (void *) t)) {
+			pthread_cond_destroy(&t->jthread_settings_cond);
+			pthread_mutex_destroy(&t->jthread_settings_mutex);
+			pthread_cond_destroy(&t->jthread_frame_cond);
+			pthread_mutex_destroy(&t->jthread_frame_mutex);
+			delete t;
+			return 0;
 		}
 		if (pthread_create(&t->jthread_settings, nullptr, jthread_settings_run, (void *) t)) {
-			pthread_mutex_destroy(&t->jthread_settings_mutex);
+			t->jthreads_stop = true;
+			pthread_mutex_lock(&t->jthread_frame_mutex);
+			pthread_cond_broadcast(&t->jthread_frame_cond);
+			pthread_mutex_unlock(&t->jthread_frame_mutex);
+			pthread_join(t->jthread_frame, nullptr);
 			pthread_cond_destroy(&t->jthread_settings_cond);
+			pthread_mutex_destroy(&t->jthread_settings_mutex);
+			pthread_cond_destroy(&t->jthread_frame_cond);
+			pthread_mutex_destroy(&t->jthread_frame_mutex);
 			delete t;
-			return 5;
+			return 0;
 		}
 		return (jlong) t;
 	}
@@ -277,10 +289,10 @@ extern "C" {
 		t->cam.disconnect(); /* Make sure we are disconnected, the callbacks can't come. */
 		t->jthreads_stop = true;
 		pthread_mutex_lock(&t->jthread_frame_mutex);
-		pthread_cond_broadcast(&t->jthread_settings_cond);
+		pthread_cond_broadcast(&t->jthread_frame_cond);
 		pthread_mutex_unlock(&t->jthread_frame_mutex);
 		pthread_mutex_lock(&t->jthread_settings_mutex);
-		pthread_cond_broadcast(&t->jthread_frame_cond);
+		pthread_cond_broadcast(&t->jthread_settings_cond);
 		pthread_mutex_unlock(&t->jthread_settings_mutex);
 		pthread_join(t->jthread_frame, nullptr);
 		pthread_join(t->jthread_settings, nullptr);

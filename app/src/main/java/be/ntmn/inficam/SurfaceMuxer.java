@@ -103,7 +103,6 @@ public class SurfaceMuxer {
 		public float scale_x = 1.0f, scale_y = 1.0f;
 		public float translate_x = 0.0f, translate_y = 0.0f;
 		public float sharpening = 0.0f;
-		private volatile boolean frameAvailable = false;
 
 		public InputSurface(SurfaceMuxer muxer) {
 			this.muxer = muxer;
@@ -137,13 +136,12 @@ public class SurfaceMuxer {
 					GLES20.GL_LINEAR);
 			if (surfaceTexture == null) {
 				surfaceTexture = new SurfaceTexture(textures[0]);
-				surfaceTexture.setOnFrameAvailableListener(
-					st -> frameAvailable = true
-				);
 				surface = new Surface(surfaceTexture);
 			} else {
 				surfaceTexture.attachToGLContext(textures[0]);
-				frameAvailable = true; // force first frame latch after reattach
+				/* Re-latch immediately after attaching. Delaying this until an asynchronous
+				 * frame-available callback can leave notifications stalled after resume. */
+				surfaceTexture.updateTexImage();
 			}
 			initialized = true;
 		}
@@ -176,10 +174,10 @@ public class SurfaceMuxer {
 			if (muxer.eglContext == EGL14.EGL_NO_CONTEXT)
 				return;
 			os.makeCurrent(); /* We need the context to be current before updateTexImage(). */
-			if (frameAvailable) {
-				surfaceTexture.updateTexImage();
-				frameAvailable = false;
-			}
+			/* Every caller draws immediately after its producer posts a buffer. Consume the
+			 * newest buffer deterministically; frame-available callbacks can be lost when a
+			 * SurfaceTexture is detached and reattached across onPause()/onResume(). */
+			surfaceTexture.updateTexImage();
 			GLES20.glViewport(x, y, w, h);
 			int program = muxer.drawModes[drawMode].program;
 			GLES20.glUseProgram(program);

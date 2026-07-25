@@ -33,7 +33,8 @@ public:
 	void fix_dead_pixels(uint16_t * frame) const; //firmware provided k frame indicates if pixel is dead
 
 	//for non-raw sensors
-	void updateSettings(const uint16_t *fourLinePara);
+	bool updateSettings(const uint16_t *fourLinePara);
+	bool updateTable(const uint16_t * frame);
 
 	//sensor value to temperature
 	void frame_to_temp(const uint16_t * frame, float * temp) const;
@@ -64,7 +65,6 @@ private:
 	float temperature_table[0x4000]{};
 
 	static int rangeToDeviceRange(CameraTemperatureRange t);
-	bool updateTable(const uint16_t * frame);
 
 	void destripe_standard(uint16_t * frame) const;
 #if defined(__aarch64__) || defined(__arm__)

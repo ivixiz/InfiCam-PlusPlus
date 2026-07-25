@@ -1,5 +1,12 @@
 #include "CameraSettings.h"
 
+#include <cmath>
+
+
+static bool equal_float(float a, float b) {
+	return a == b || (std::isnan(a) && std::isnan(b));
+}
+
 
 CameraSettings::CameraSettings() {
 	temperature_correction = 0.0f;
@@ -19,16 +26,15 @@ CameraSettings::CameraSettings(const CameraSettings& other) {
 
 
 bool CameraSettings::operator==(const CameraSettings& other) const {
-	if(temperature_correction != other.temperature_correction ||
-	   emissivity != other.emissivity ||
-	   humidity != other.humidity ||
-	   air_temperature != other.air_temperature ||
-	   reflection_temperature != other.reflection_temperature ||
+	if(!equal_float(temperature_correction.load(), other.temperature_correction.load()) ||
+	   !equal_float(emissivity.load(), other.emissivity.load()) ||
+	   !equal_float(humidity.load(), other.humidity.load()) ||
+	   !equal_float(air_temperature.load(), other.air_temperature.load()) ||
+	   !equal_float(reflection_temperature.load(), other.reflection_temperature.load()) ||
 	   distance != other.distance ||
 	   temperature_range != other.temperature_range ||
 	   lens != other.lens ||
-	   use_raw_logic != other.use_raw_logic ||
-	   max_temperature_clipping != other.max_temperature_clipping){
+	   use_raw_logic != other.use_raw_logic){
 		   return  false;
 	   }
 	return true;

@@ -11,6 +11,13 @@
 #include <sys/types.h>
 
 
+static float read_float(const uint16_t *data, const int offset) {
+	float value;
+	memcpy(&value, data + offset, sizeof(value));
+	return value;
+}
+
+
 InfiFrame::InfiFrame(CameraSettings & p_cam_settings, const int stream_width, const int stream_height):
 	cam_settings(p_cam_settings), width(stream_width), stream_height(stream_height), vision_height(stream_height-METADATA_HEIGHT) {
 
@@ -131,32 +138,48 @@ void InfiFrame::apply_calibration(const uint16_t * source_frame, uint16_t * cali
 }
 
 
-void InfiFrame::updateSettings(const uint16_t *fourLinePara){
-		int offset_cal = 0;
-		char model_string[16];
-		if (width < 0x180) {
-			if (width == 0xf0) {
-				offset_cal = 0xf0;
-			}
-			else if (width == 0x100) {
-				offset_cal = 0x100;
-			}
+bool InfiFrame::updateSettings(const uint16_t *fourLinePara){
+	int offset_cal = 0;
+	char model_string[16];
+	if (width < 0x180) {
+		if (width == 0xf0) {
+			offset_cal = 0xf0;
 		}
-		else if (width == 0x180) {
-			float _;
-			ComparePN(0x180,fourLinePara,&_,model_string);
-			offset_cal = 0x480;
+		else if (width == 0x100) {
+			offset_cal = 0x100;
 		}
-		else if (width == 0x280) {
-			offset_cal = 0x780;
-		}
-		cam_settings.temperature_correction = *(float*)(fourLinePara + (offset_cal + 0x7f));
-		cam_settings.reflection_temperature = *(float*)(fourLinePara + (offset_cal + 0x81));
-		cam_settings.air_temperature = *(float*)(fourLinePara + (offset_cal + 0x83));
-		cam_settings.humidity = *(float*)(fourLinePara + (offset_cal + 0x85));
-		cam_settings.emissivity = *(float*)(fourLinePara + (offset_cal + 0x87));
-		cam_settings.distance = fourLinePara[offset_cal + 0x89];
 	}
+	else if (width == 0x180) {
+		float ignored;
+		ComparePN(0x180,fourLinePara,&ignored,model_string);
+		offset_cal = 0x480;
+	}
+	else if (width == 0x280) {
+		offset_cal = 0x780;
+	}
+
+	const float correction = read_float(fourLinePara, offset_cal + 0x7f);
+	const float reflection_temperature = read_float(fourLinePara, offset_cal + 0x81);
+	const float air_temperature = read_float(fourLinePara, offset_cal + 0x83);
+	const float humidity = read_float(fourLinePara, offset_cal + 0x85);
+	const float emissivity = read_float(fourLinePara, offset_cal + 0x87);
+	const uint16_t distance = fourLinePara[offset_cal + 0x89];
+	if(!std::isfinite(correction) || correction < -1000.0f || correction > 1000.0f ||
+	   !std::isfinite(reflection_temperature) || reflection_temperature <= -273.15f || reflection_temperature > 1000.0f ||
+	   !std::isfinite(air_temperature) || air_temperature <= -273.15f || air_temperature > 1000.0f ||
+	   !std::isfinite(humidity) || humidity < 0.0f || humidity > 1.0f ||
+	   !std::isfinite(emissivity) || emissivity < 0.01f || emissivity > 1.0f){
+		LOGW("Ignoring invalid V1 settings metadata.\n");
+		return false;
+	}
+	cam_settings.temperature_correction = correction;
+	cam_settings.reflection_temperature = reflection_temperature;
+	cam_settings.air_temperature = air_temperature;
+	cam_settings.humidity = humidity;
+	cam_settings.emissivity = emissivity;
+	cam_settings.distance = distance;
+	return true;
+}
 
 bool InfiFrame::thermometryT4Line(int width, int height,
 								  float *temperatureTable, //output, post-nuc sensor value to temperature table
@@ -205,7 +228,7 @@ bool InfiFrame::thermometryT4Line(int width, int height,
 
 	uint16_t ref_pixel = fourLinePara[offset_cal];
 	uint16_t shut_temp = *(fourLinePara + (offset_cal | 1));
-	float calibrate_correct = cameraLens==0x82?*(float *)(fourLinePara + (offset_cal | 0xd)):0.0f;
+	float calibrate_correct = cameraLens==0x82?read_float(fourLinePara, offset_cal | 0xd):0.0f;
 	uint16_t offset_a = offset_cal | 3;
 	uint16_t offset_ka = offset_cal | 7;
 	uint16_t offset_b = offset_cal | 5;
@@ -224,11 +247,11 @@ bool InfiFrame::thermometryT4Line(int width, int height,
 	LOGD("offset_a=%d offset_b=%d offset_ka=%d offset_ka=%d offset_ka=%d\n",offset_a,offset_b,offset_ka,offset_kb,offset_kc);
 
 
-	float a = *(float *)(fourLinePara + offset_a);
-	float b = *(float *)(fourLinePara + offset_b);
-	float ka = *(float *)(fourLinePara + offset_ka);
-	float kb = *(float *)(fourLinePara + offset_kb);
-	float kc = *(float *)(fourLinePara + offset_kc);
+	float a = read_float(fourLinePara, offset_a);
+	float b = read_float(fourLinePara, offset_b);
+	float ka = read_float(fourLinePara, offset_ka);
+	float kb = read_float(fourLinePara, offset_kb);
+	float kc = read_float(fourLinePara, offset_kc);
 
 	LOGD("a=%f b=%f ka=%f kb=%f kc=%f\n",a,b,ka,kb,kc);
 	if(!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(ka) ||
@@ -247,12 +270,20 @@ bool InfiFrame::thermometryT4Line(int width, int height,
 	}
 
 	if(!isNewProduct){ //these do not exist in raw sensors.
-		*correction = *(float*)(fourLinePara + (offset_cal + 0x7f));
-		*Refltmp = *(float*)(fourLinePara + (offset_cal + 0x81));
-		*Airtmp = *(float*)(fourLinePara + (offset_cal + 0x83));
-		*humi = *(float*)(fourLinePara + (offset_cal + 0x85));
-		*emiss = *(float*)(fourLinePara + (offset_cal + 0x87));
+		*correction = read_float(fourLinePara, offset_cal + 0x7f);
+		*Refltmp = read_float(fourLinePara, offset_cal + 0x81);
+		*Airtmp = read_float(fourLinePara, offset_cal + 0x83);
+		*humi = read_float(fourLinePara, offset_cal + 0x85);
+		*emiss = read_float(fourLinePara, offset_cal + 0x87);
 		*distance = fourLinePara[offset_cal + 0x89];
+	}
+	if(!std::isfinite(*correction) || !std::isfinite(*Refltmp) ||
+	   !std::isfinite(*Airtmp) || !std::isfinite(*humi) ||
+	   !std::isfinite(*emiss) || *Refltmp <= -273.15f ||
+	   *Airtmp <= -273.15f || *humi < 0.0f || *humi > 1.0f ||
+	   *emiss < 0.01f || *emiss > 1.0f){
+		LOGW("Invalid thermometry environment settings.\n");
+		return false;
 	}
 
 	LOGD("correction=%f Refltmp=%f Airtmp=%f humi=%f emiss=%f distance=%d\n",*correction,*Refltmp,*Airtmp,*humi,*emiss,*distance);
@@ -320,7 +351,7 @@ bool InfiFrame::thermometryT4Line(int width, int height,
 
 		temperatureTable[i] = calibrate_correct + t_rad + dist_correction;
 
-		if(std::isnan(temperatureTable[i])){
+		if(!std::isfinite(temperatureTable[i])){
 			LOGW("Invalid thermometry table value at %d with v=%f t_raw=%f t_rad=%f, dist_correction=%f\n",i,v,t_raw,t_rad,dist_correction);
 			return false;
 		}
@@ -329,6 +360,10 @@ bool InfiFrame::thermometryT4Line(int width, int height,
 			LOGW("Bad sensor temperature table calculation, %f should be greater than %f\n", temperatureTable[i], temperatureTable[i-1]);
 			return false;
 		}
+	}
+	if(temperatureTable[0x3fff] <= -273.0f){
+		LOGW("Thermometry table contains no valid upper endpoint.\n");
+		return false;
 	}
 	return true;
 }
@@ -349,7 +384,7 @@ void InfiFrame::ComparePN(const int width,
 	strncpy(output_version_string, version_string, 15);
 	output_version_string[15] = '\0';
 
-	LOGD("Version_string=\"%s\"\n",version_string);
+	LOGD("Version_string=\"%s\"\n",output_version_string);
 
 
 	int otherModel = !strstr(output_version_string, "312") & !strstr(output_version_string, "DX300");

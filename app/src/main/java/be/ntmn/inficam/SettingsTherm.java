@@ -162,7 +162,7 @@ public class SettingsTherm extends Settings {
 				"emissivity",
 				R.string.set_emissivity,
 				95,
-				0,
+				1,
 				100,
 				1,
 				100
