@@ -1222,8 +1222,12 @@ uvc_error_t uvc_stream_start(
                                 endpoint_bytes_per_packet - 1) / endpoint_bytes_per_packet;
 
         /* But keep a reasonable limit: Otherwise we start dropping data */
-        if (packets_per_transfer > 32)
-          packets_per_transfer = 32;
+        /* Android's usbfs backend commonly rejects the ~96 KiB isochronous
+         * URB produced by 32 packets at the P2 Pro's 3072-byte payload.
+         * Smaller transfers are submitted continuously and avoid ENOMEM
+         * without reducing the negotiated frame rate. */
+        if (packets_per_transfer > 8)
+          packets_per_transfer = 8;
         
         total_transfer_size = packets_per_transfer * endpoint_bytes_per_packet;
         break;
@@ -1298,7 +1302,7 @@ uvc_error_t uvc_stream_start(
       libusb_free_transfer ( strmh->transfers[transfer_id]);
       strmh->transfers[transfer_id] = 0;
     }
-    ret = UVC_SUCCESS;
+    return ret;
   }
 
   UVC_EXIT(ret);

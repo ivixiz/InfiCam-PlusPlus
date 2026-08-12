@@ -22,15 +22,14 @@ class UVCDevice {
 	uvc_device_handle_t *uvc_devh = nullptr;
 
 	static void *usb_handle_events(void *arg);
-	void getDeviceInfo(uint16_t * vendorId, char ** manufacturerName, char ** productName);
-	libusb_device_handle * get_libusb_handle();
+	void getDeviceInfo(uint16_t * vendorId, uint16_t *productId, char ** manufacturerName, char ** productName);
 
 public:
 	uvc_frame_format format = UVC_FRAME_FORMAT_ANY;
 
 	~UVCDevice();
 
-	int connect(int fd, int & width, int & height, bool & use_raw_logic); /* Closes the FD on disconnect. */
+	int connect(int fd, int & width, int & height, bool & use_raw_logic, bool & is_p2_pro); /* Closes the FD on disconnect. */
 	void disconnect(); /* Opening a new connection will close the previous one if it exists. */
 
 	/* The callback gets called from a dedicated thread (it's ok to block in the callback). */
@@ -38,6 +37,7 @@ public:
 	void stream_stop(); /* Attempting to stop stream is okay even when no stream. */
 
 	int set_zoom_abs(uint16_t val);
+	libusb_device_handle *get_libusb_handle();
 };
 
 #endif /* __UVCDEVICE_H__ */

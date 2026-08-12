@@ -27,13 +27,14 @@ UVCDevice::~UVCDevice() {
 	disconnect();
 }
 
-void UVCDevice::getDeviceInfo(uint16_t * vendorId, char ** manufacturerName, char ** productName){
+void UVCDevice::getDeviceInfo(uint16_t * vendorId, uint16_t *productId, char ** manufacturerName, char ** productName){
 	uvc_device_descriptor_t *uvc_device_desc;
 	uvc_device_t *uvc_dev = uvc_get_device(uvc_devh);
 	if(uvc_get_device_descriptor(uvc_dev, &uvc_device_desc) != UVC_SUCCESS){
 		return;
 	}
 	*vendorId = uvc_device_desc->idVendor;
+	*productId = uvc_device_desc->idProduct;
 	uvc_free_device_descriptor(uvc_device_desc);  // remember to free it
 
 	libusb_device_handle *lh = uvc_get_libusb_handle(uvc_devh);
@@ -50,7 +51,7 @@ void UVCDevice::getDeviceInfo(uint16_t * vendorId, char ** manufacturerName, cha
 	}
 }
 
-int UVCDevice::connect(int fd, int & width, int & height, bool & use_raw_logic) {
+int UVCDevice::connect(int fd, int & width, int & height, bool & use_raw_logic, bool & is_p2_pro) {
 	disconnect(); /* Disconnect if connected. */
 	usb_fd = fd;
 	usb_thread_stop = 0;
@@ -78,9 +79,10 @@ int UVCDevice::connect(int fd, int & width, int & height, bool & use_raw_logic) 
 
 
 	uint16_t vendorId = 0;
+	uint16_t productId = 0;
 	char * manufacturerName = nullptr;
 	char * productName = nullptr;
-	getDeviceInfo(&vendorId,&manufacturerName,&productName);
+	getDeviceInfo(&vendorId, &productId, &manufacturerName, &productName);
 
 	if( (manufacturerName && strcmp(manufacturerName,"Xinfrared") == 0 ) ||
 		productName && (//New generation of raw frame devices
@@ -97,14 +99,12 @@ int UVCDevice::connect(int fd, int & width, int & height, bool & use_raw_logic) 
 		){
 		use_raw_logic = true;
 	}
-	if(vendorId == 0xBDA){ //p2pro
-        free(manufacturerName);
-        free(productName);
-        disconnect();
-		return 99; //TODO: Not supported right now. Fix this.
-	}
+	/* P2 Pro exposes two UVC frame sizes. 256x192 is only the preview; the
+	 * second 256x384 mode is the stream used by the official app/OBS and has
+	 * the 16-bit thermal plane in its lower 192 rows. */
+	is_p2_pro = vendorId == 0x0BDA && productId == 0x5830;
 
-	LOGI("UVC device connected: vendorId=%x manufacturerName=%s productName=%s\n",vendorId,manufacturerName?manufacturerName:"",productName?productName:"");
+	LOGI("UVC device connected: vid:pid=%04x:%04x manufacturerName=%s productName=%s\n", vendorId, productId, manufacturerName?manufacturerName:"",productName?productName:"");
 
 	if(manufacturerName){
 		free(manufacturerName);
@@ -127,7 +127,7 @@ int UVCDevice::connect(int fd, int & width, int & height, bool & use_raw_logic) 
 		return 8;
 	}
 
-	frame = format_desc->frame_descs;
+	frame = is_p2_pro ? format_desc->frame_descs->next : format_desc->frame_descs;
 
 	if (frame == nullptr) {
 		disconnect();
@@ -198,6 +198,6 @@ int UVCDevice::set_zoom_abs(uint16_t val) {
 	return uvc_set_zoom_abs(uvc_devh, val);
 }
 
-libusb_device_handle * UVCDevice::get_libusb_handle() {
+libusb_device_handle *UVCDevice::get_libusb_handle() {
 	return uvc_get_libusb_handle(uvc_devh);
 }

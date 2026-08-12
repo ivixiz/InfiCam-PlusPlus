@@ -190,9 +190,13 @@ public class MainActivity extends BaseActivity {
 			if(p_usb_device.getProductName() == null){
 				return;
 			}
+			/* This P2 Pro reports the generic product name "USB Camera", so VID:PID
+			 * is the only reliable identifier available to Android. */
+			boolean isP2Pro = p_usb_device.getVendorId() == 0x0bda &&
+					p_usb_device.getProductId() == 0x5830;
 			//From original app, yes it's big.
 			boolean is_ours =
-				!p_usb_device.getProductName().contains("Search") &&
+				isP2Pro || (!p_usb_device.getProductName().contains("Search") &&
 				(p_usb_device.getProductName().contains("FX3") ||
 					p_usb_device.getProductName().contains("PNS") ||
 					p_usb_device.getProductName().contains("T5") ||
@@ -214,7 +218,7 @@ public class MainActivity extends BaseActivity {
 					p_usb_device.getProductName().contains("T3C") ||
 					p_usb_device.getProductName().contains("DP") ||
 					p_usb_device.getProductName().contains("T19") ||
-					p_usb_device.getProductName().contains("DX300"));
+					p_usb_device.getProductName().contains("DX300")));
 			if (!is_ours) {
 				Log.e("inficam","Device is not recognized: "+p_usb_device.getProductName());
 				return;
@@ -596,6 +600,10 @@ public class MainActivity extends BaseActivity {
 				infiCam.startStream();
 				if (!isCurrentConnection(token, conn))
 					return;
+				/* Start accepting frames immediately. P2 Pro has no calibration phase;
+				 * delaying this until settings synchronisation finishes can otherwise
+				 * leave an already-running UVC stream invisible. */
+				infiCam.setFrameCallback(frameCallback);
 
 				suppressCalibrationRequest = true;
 				try {
@@ -609,7 +617,14 @@ public class MainActivity extends BaseActivity {
 				if (!isCurrentConnection(token, conn))
 					return;
 
-				infiCam.calibrateBlocking();
+				/* P2 Pro's 256x384 UVC stream already contains calibrated Y16
+				 * temperatures. It does not implement this app's zoom-based shutter
+				 * calibration protocol, so waiting for it leaves the UI on
+				 * "Calibrating..." forever. */
+				boolean isP2Pro = dev.getVendorId() == 0x0bda &&
+						dev.getProductId() == 0x5830;
+				if (!isP2Pro)
+					infiCam.calibrateBlocking();
 				handler.post(() -> {
 					if (!isCurrentConnection(token, conn))
 						return;
@@ -618,12 +633,10 @@ public class MainActivity extends BaseActivity {
 					messageView.clearMessage();
 					messageView.showMessage(getString(R.string.msg_connected,
 							dev.getProductName()));
-					/* We are ready to accept frames */
 					resetRenderStats();
 					Log.i("inficam", String.format(Locale.US,
 							"Frame diagnostics started: connection=%d size=%dx%d",
 							token, width, height));
-					infiCam.setFrameCallback(frameCallback);
 				});
 			} catch (Exception e) {
 				String message = e.getMessage() == null ? getString(R.string.msg_connect_failed) :

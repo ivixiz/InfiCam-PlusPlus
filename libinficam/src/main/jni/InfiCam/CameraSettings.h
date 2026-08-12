@@ -26,6 +26,7 @@ public:
 	std::atomic<CameraTemperatureRange> temperature_range{};
 	std::atomic<int> lens{};
 	std::atomic<bool> use_raw_logic{}; //Only used by T2x V2 for now.
+	std::atomic<bool> is_p2_pro{};
 	std::atomic<float> max_temperature_clipping{};
 
 	CameraSettings();

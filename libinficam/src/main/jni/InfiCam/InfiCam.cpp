@@ -86,10 +86,26 @@ InfiCam::~InfiCam(){
 int InfiCam::connect(const int uvc_fd, int & output_width, int & output_height, settings_callback_t * p_settings_callback) {
 	int width, height;
 	bool use_raw_logic = false;
-	if (dev.connect(uvc_fd, width, height, use_raw_logic)) {
+	if (dev.connect(uvc_fd, width, height, use_raw_logic, is_p2_pro)) {
 		return 2;
 	}
+	uvc_width = width;
+	uvc_height = height;
 	cam_settings.use_raw_logic = use_raw_logic; //atomics, so we have to do it here
+	cam_settings.is_p2_pro = is_p2_pro;
+	if(is_p2_pro){
+		/* The P2 thermal stream is 256x384; its lower half is the 256x192
+		 * 16-bit temperature plane. Keep 196 logical rows so InfiFrame's
+		 * public image size remains 256x192. */
+		if(width != 256 || height != 384){
+			LOGE("Unsupported P2 Pro stream layout: %dx%d\n", width, height);
+			dev.disconnect();
+			return 3;
+		}
+		width = 256;
+		height = 196; //InfiFrame exposes height minus four metadata rows.
+		cam_settings.max_temperature_clipping = 150.0f;
+	}
 	const bool supported_width = width == 240 || width == 256 || width == 384 || width == 640;
 	if(height <= 4 || !supported_width || (use_raw_logic && (width != 256 || height != 196))){
 		LOGE("Unsupported camera stream layout: %dx%d raw=%d\n", width, height, use_raw_logic);
@@ -172,13 +188,13 @@ int InfiCam::stream_start(frame_callback_t *cb) {
 	nonraw_frames_ready = false;
 	nonraw_table_ready = false;
 	if (dev.stream_start(uvc_frame_callback, this,
-						 infiframe->width, infiframe->stream_height,
+						 is_p2_pro ? uvc_width : infiframe->width,
+						 is_p2_pro ? uvc_height : infiframe->stream_height,
 						 cam_settings.use_raw_logic)) {
 		dev.stream_stop();
 		return 1;
 	}
 	is_ready = true;
-
 	Utils::sleep(300); //from official implementation
 
 	if(cam_settings.use_raw_logic){
@@ -298,6 +314,7 @@ void * InfiCam::shutter_thread_func(void * arg){
 
 void InfiCam::calibrate(){
 	if(!is_ready) { return; }
+	if(is_p2_pro) { return; } //P2 Pro handles its own shutter cycle.
 	if(suppress_calibration.load()){
 		suppressed_calibration_pending = true;
 		return;
@@ -396,6 +413,27 @@ void InfiCam::uvc_frame_callback(uvc_frame_t *frame, void *user_ptr){
 		t->frame_stats_start = steady_clock::now();
 		t->received_frame_count = 0;
 		t->delivered_frame_count = 0;
+	}
+
+	if(t->is_p2_pro){
+		const size_t source_pixels = (size_t)t->uvc_width * (size_t)t->uvc_height;
+		const size_t thermal_pixels = (size_t)256 * 192;
+		const size_t expected_bytes = source_pixels * sizeof(uint16_t);
+		if(frame->data == nullptr || frame->data_bytes < expected_bytes){
+			LOGW("Ignoring partial P2 Pro frame (%zu/%zu bytes)\n", (size_t)frame->data_bytes, expected_bytes);
+			return;
+		}
+		/* The lower 256x192 plane contains calibrated 16-bit values in the
+		 * camera's Kelvin/16 representation. The top half is the visible
+		 * preview and must not be interpreted as temperatures. */
+		const auto *pixels = (const uint16_t *)frame->data + 256 * 192;
+		float temp_array[256 * 192];
+		for(size_t i = 0; i < thermal_pixels; ++i){
+			temp_array[i] = ((float)(pixels[i] >> 2) / 16.0f) - 273.15f;
+		}
+		t->delivered_frame_count++;
+		t->frame_callback(t->inficam_jni, temp_array, t->cam_settings);
+		return;
 	}
 
 	if(!t->cam_settings.use_raw_logic){
@@ -695,7 +733,6 @@ void InfiCam::set_ushort(const int addr, const uint16_t val) {
 	pthread_mutex_unlock(&command_mutex);
 }
 
-
 std::vector<std::array<float,2>> InfiCam::get_ranges(){
 	return cam_settings.get_temperature_ranges();
 }
@@ -710,14 +747,16 @@ void InfiCam::set_range(const int range) {
 
 	const auto requested_range = (CameraTemperatureRange)range;
 	LOGD("set_range %d (cur %d)\n", range, (int)cam_settings.temperature_range);
-	if(cam_settings.use_raw_logic && requested_range == cam_settings.temperature_range){
+	if((cam_settings.use_raw_logic || is_p2_pro) && requested_range == cam_settings.temperature_range){
 		LOGD("Ignoring.\n");
 		return;
 	}
 
-	pthread_mutex_lock(&command_mutex);
-	dev.set_zoom_abs((requested_range == CameraTemperatureRange::RANGE_120_400) ? CMD_RANGE_400 : CMD_RANGE_120);
-	pthread_mutex_unlock(&command_mutex);
+	if(!is_p2_pro){
+		pthread_mutex_lock(&command_mutex);
+		dev.set_zoom_abs((requested_range == CameraTemperatureRange::RANGE_120_400) ? CMD_RANGE_400 : CMD_RANGE_120);
+		pthread_mutex_unlock(&command_mutex);
+	}
 
 	settle_start_time = steady_clock::now();
 	refresh_auto_shut_interval();
@@ -738,7 +777,7 @@ void InfiCam::set_correction(const float corr) {
 	if(!is_ready) { return; }
 	if(!std::isfinite(corr)){ LOGE("Ignoring non-finite correction.\n"); return; }
 	LOGD("set_correction %f (cur %f)\n",corr,(float)cam_settings.temperature_correction);
-	if(cam_settings.use_raw_logic){
+	if(cam_settings.use_raw_logic || is_p2_pro){
 		if(cam_settings.temperature_correction != corr){
 			cam_settings.temperature_correction = corr;
 			settings_callback(inficam_jni, cam_settings);
@@ -752,7 +791,7 @@ void InfiCam::set_temp_reflected(const float t_ref) {
 	if(!is_ready) { return; }
 	if(!std::isfinite(t_ref) || t_ref <= -273.15f){ LOGE("Ignoring invalid reflected temperature.\n"); return; }
 	LOGD("set_temp_reflected %f (cur %f)f\n",t_ref,(float)cam_settings.reflection_temperature);
-	if(cam_settings.use_raw_logic){
+	if(cam_settings.use_raw_logic || is_p2_pro){
 		if(cam_settings.reflection_temperature != t_ref){
 			cam_settings.reflection_temperature = t_ref;
 			settings_callback(inficam_jni, cam_settings);
@@ -766,7 +805,7 @@ void InfiCam::set_temp_air(const float t_air) {
 	if(!is_ready) { return; }
 	if(!std::isfinite(t_air) || t_air <= -273.15f){ LOGE("Ignoring invalid air temperature.\n"); return; }
 	LOGD("set_temp_air %f (cur %f)\n",t_air,(float)cam_settings.air_temperature);
-	if(cam_settings.use_raw_logic){
+	if(cam_settings.use_raw_logic || is_p2_pro){
 		if(cam_settings.air_temperature != t_air){
 			cam_settings.air_temperature = t_air;
 			settings_callback(inficam_jni, cam_settings);
@@ -781,7 +820,7 @@ void InfiCam::set_humidity(const float humi) {
 	if(!std::isfinite(humi)){ LOGE("Ignoring non-finite humidity.\n"); return; }
 	const float safe_humi = std::clamp(humi, 0.0f, 1.0f);
 	LOGD("set_humidity %f (normalized %f, cur %f)\n",humi,safe_humi,(float)cam_settings.humidity);
-	if(cam_settings.use_raw_logic){
+	if(cam_settings.use_raw_logic || is_p2_pro){
 		if(cam_settings.humidity != safe_humi){
 			cam_settings.humidity = safe_humi;
 			settings_callback(inficam_jni, cam_settings);
@@ -796,7 +835,7 @@ void InfiCam::set_emissivity(const float emi) {
 	const float safe_emi = std::isfinite(emi) ? std::clamp(emi, 0.01f, 1.0f) : 0.95f;
 	LOGD("set_emissivity %f (normalized %f, cur %f)\n",
 			emi, safe_emi, (float) cam_settings.emissivity);
-	if(cam_settings.use_raw_logic){
+	if(cam_settings.use_raw_logic || is_p2_pro){
 		if(cam_settings.emissivity != safe_emi){
 			cam_settings.emissivity = safe_emi;
 			settings_callback(inficam_jni, cam_settings);
@@ -809,7 +848,7 @@ void InfiCam::set_emissivity(const float emi) {
 void InfiCam::set_distance(const uint16_t dist) {
 	if(!is_ready) { return; }
 	LOGD("set_distance %d (cur %d)\n",dist,(int)cam_settings.distance);
-	if(cam_settings.use_raw_logic){
+	if(cam_settings.use_raw_logic || is_p2_pro){
 		if(cam_settings.distance != dist){
 			cam_settings.distance = dist;
 			settings_callback(inficam_jni, cam_settings);
@@ -821,7 +860,7 @@ void InfiCam::set_distance(const uint16_t dist) {
 
 void InfiCam::store_params(){
 	if(!is_ready) { return; }
-	if(cam_settings.use_raw_logic){
+	if(cam_settings.use_raw_logic || is_p2_pro){
 		LOGE("Saving parameters to RAW sensors is not possible.");
 	} else {
 		LOGD("Saving parameters to camera.");

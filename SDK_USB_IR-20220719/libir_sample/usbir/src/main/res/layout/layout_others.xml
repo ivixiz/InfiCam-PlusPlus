@@ -1,0 +1,314 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingRight="5dp"
+    android:paddingLeft="5dp">
+
+    <!-- 环境变量修正 -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/temp_correction"
+        android:textColor="@color/white" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnTempCorrection1"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginRight="10dp"
+            android:text="Step 1"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/btnTempCorrection2"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginRight="10dp"
+            android:text="Step 2"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/btnTempCorrection3"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Step 3"
+            android:textAllCaps="false" />
+
+    </LinearLayout>
+
+    <!-- 读取探测器温度 -->
+    <TextView
+        android:id="@+id/tvDTEMP"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="@color/white" />
+
+    <!-- -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <!-- 输出帧频 -->
+        <RelativeLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content">
+
+            <TextView
+                android:id="@+id/tvFPS"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/fps_status"
+                android:textColor="@color/white" />
+
+            <EditText
+                android:id="@+id/etFPS"
+                android:layout_width="100dp"
+                android:layout_height="wrap_content"
+                android:layout_below="@id/tvFPS"
+                android:ems="10"
+                android:textColor="@color/white"
+                android:hint="1~30"
+                android:inputType="number" />
+
+            <Button
+                android:id="@+id/btnFPS"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_centerVertical="true"
+                android:layout_toRightOf="@id/etFPS"
+                android:text="set"
+                android:textAllCaps="false" />
+        </RelativeLayout>
+
+        <RelativeLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content">
+
+            <!-- -->
+            <TextView
+                android:id="@+id/tvShutterEnStatus"
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:text="shutter_en_sta"
+                android:textColor="@color/white" />
+
+            <ToggleButton
+                android:id="@+id/tgShutterEnStatus"
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:layout_below="@+id/tvShutterEnStatus" />
+
+        </RelativeLayout>
+
+    </LinearLayout>
+
+    <!-- 自动快门相关 -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <!-- -->
+        <TextView
+            android:id="@+id/autotext"
+            android:layout_width="60dp"
+            android:layout_height="wrap_content"
+            android:text="@string/auto_shutter"
+            android:textColor="@color/white" />
+
+        <ToggleButton
+            android:id="@+id/automode"
+            android:layout_width="60dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@+id/autotext" />
+
+        <!-- -->
+        <TextView
+            android:id="@+id/mintext"
+            android:layout_width="60dp"
+            android:layout_height="wrap_content"
+            android:layout_toRightOf="@+id/automode"
+            android:text="@string/min_interval"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/min"
+            android:layout_width="60dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@+id/mintext"
+            android:layout_toRightOf="@+id/automode"
+            android:ems="10"
+            android:inputType="number"
+            android:textColor="@color/white" />
+
+        <!-- -->
+        <TextView
+            android:id="@+id/maxtext"
+            android:layout_width="60dp"
+            android:layout_height="wrap_content"
+            android:layout_toRightOf="@+id/mintext"
+            android:text="@string/max_interval"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/max"
+            android:layout_width="60dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@+id/maxtext"
+            android:layout_toRightOf="@+id/mintext"
+            android:ems="10"
+            android:inputType="number"
+            android:textColor="@color/white" />
+
+        <!-- -->
+        <TextView
+            android:id="@+id/ooctext"
+            android:layout_width="60dp"
+            android:layout_height="wrap_content"
+            android:layout_toRightOf="@+id/maxtext"
+            android:text="OOC"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/ooc"
+            android:layout_width="60dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@+id/ooctext"
+            android:layout_toRightOf="@+id/maxtext"
+            android:ems="10"
+            android:inputType="number"
+            android:textColor="@color/white" />
+
+        <!-- -->
+        <TextView
+            android:id="@+id/btext"
+            android:layout_width="60dp"
+            android:layout_height="wrap_content"
+            android:layout_toRightOf="@+id/ooctext"
+            android:text="B"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/b"
+            android:layout_width="60dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@+id/btext"
+            android:layout_toRightOf="@+id/ooctext"
+            android:ems="10"
+            android:inputType="number"
+            android:textColor="@color/white" />
+
+        <Button
+            android:id="@+id/btnShutSubmit"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_toRightOf="@+id/b"
+            android:text="submit"
+            android:textAllCaps="false" />
+    </RelativeLayout>
+
+    <!-- -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:id="@+id/type"
+            android:layout_width="200dp"
+            android:layout_height="wrap_content"
+            android:text="TPD param type"
+            android:textColor="@color/white" />
+
+        <Spinner
+            android:id="@+id/Param_Sel"
+            android:layout_width="200dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/type"
+            android:layout_weight="1"
+            android:spinnerMode="dialog" />
+
+        <TextView
+            android:id="@+id/textView13"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:layout_alignStart="@id/data"
+            android:text="value"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/data"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/textView13"
+            android:layout_toRightOf="@id/Param_Sel"
+            android:ems="10"
+            android:inputType="number"
+            android:textColor="@color/white" />
+
+        <Button
+            android:id="@+id/btnTpdSubmit"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_toRightOf="@id/data"
+            android:text="submit"
+            android:textAllCaps="false" />
+
+    </RelativeLayout>
+
+    <!-- -->
+    <LinearLayout
+        android:orientation="horizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:id="@+id/textView5"
+            android:layout_width="match_parent"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="@string/save_parameters"
+            android:textColor="@color/white" />
+
+        <TextView
+            android:id="@+id/textView6"
+            android:layout_width="match_parent"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_alignLeft="@id/restoreConfig"
+            android:text="@string/reset_parameters"
+            android:textColor="@color/white" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Spinner
+            android:id="@+id/saveConfig"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:spinnerMode="dialog" />
+
+
+        <Spinner
+            android:id="@+id/restoreConfig"
+            android:layout_width="match_parent"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:spinnerMode="dialog" />
+    </LinearLayout>
+
+</LinearLayout>

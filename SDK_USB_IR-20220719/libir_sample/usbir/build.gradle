@@ -1,0 +1,85 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    compileSdk rootProject.ext.android.compileSdkVer
+
+    defaultConfig {
+        applicationId "com.infisense.usbir"
+        minSdk rootProject.ext.android.minSdkVer
+        targetSdk rootProject.ext.android.targetSdkVer //具体配置请参考README文件中<使用说明>的targetSdk部分
+        versionCode 113
+        versionName "1.1.3${if (!isReleaseVersion.toBoolean()) { new Date().format(".yyMMddHH", TimeZone.getTimeZone("GMT+08:00")) } else { "" }}${if (!isReleaseVersion.toBoolean()) { debugVersionInfo } else { "" }}"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        // 生成包含指定平台的so库的apk
+        ndk {
+//            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'
+            abiFilters 'arm64-v8a', 'armeabi', 'armeabi-v7a'
+        }
+
+        // gradle.properties中配置项
+        resValue("bool", 'isReleaseVersion', isReleaseVersion)
+        resValue("string", 'debugVersionInfo', debugVersionInfo)
+
+    }
+
+    buildTypes {
+        release {
+            // 启用代码压缩、优化和混淆（由R8或者ProGuard执行）
+            minifyEnabled false
+            // Zipalign优化
+            zipAlignEnabled false
+            // 启用资源压缩（由Android Gradle plugin执行）
+            shrinkResources false
+            // 指定混淆保留规则文件
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            // 启用代码压缩、优化和混淆（由R8或者ProGuard执行）
+            minifyEnabled false
+            // Zipalign优化
+            zipAlignEnabled false
+            // 启用资源压缩（由Android Gradle plugin执行）
+            shrinkResources false
+            // 指定混淆保留规则文件
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    // 启用dataBinding
+    dataBinding {
+        enabled = true
+    }
+
+    // 配置NDK版本
+    ndkVersion rootProject.ext.android.ndkVersion
+
+    // 修改生成的apk的名字
+    android.applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "USB_IR_${new Date().format("yyMMddHHmm", TimeZone.getTimeZone("GMT+08:00"))}.apk"
+        }
+    }
+
+}
+
+dependencies {
+    // use jar or aar
+  implementation fileTree(dir: 'libs', include: ['*.jar', '*.aar'])
+    // base
+    implementation roots.appcompat
+    implementation roots.material
+    testImplementation roots.junit
+    androidTestImplementation roots["ext-junit"]
+    androidTestImplementation roots["espresso-core"]
+    implementation roots.constraintlayout
+    // butterknife
+    implementation thirdFrame["butterknife"]
+    annotationProcessor thirdFrame["butterknife-compiler"]
+    // add library,use sdk source
+    //   implementation project(path: ':cameralibrary')
+
+}

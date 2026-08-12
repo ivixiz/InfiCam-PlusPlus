@@ -1,0 +1,68 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    compileSdk rootProject.ext.android.compileSdkVer
+
+    defaultConfig {
+        applicationId "com.infisense.ir"
+        minSdk rootProject.ext.android.minSdkVer
+        targetSdk rootProject.ext.android.targetSdkVer
+        versionCode 100
+        versionName "1.0.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        // 生成包含指定平台的so库的apk
+        ndk {
+//            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'
+            abiFilters 'arm64-v8a', 'armeabi', 'armeabi-v7a'
+        }
+
+    }
+
+    buildTypes {
+        release {
+            // 启用代码压缩、优化和混淆（由R8或者ProGuard执行）
+            minifyEnabled false
+            // Zipalign优化
+            zipAlignEnabled false
+            // 启用资源压缩（由Android Gradle plugin执行）
+            shrinkResources false
+            // 指定混淆保留规则文件
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            // 启用代码压缩、优化和混淆（由R8或者ProGuard执行）
+            minifyEnabled false
+            // Zipalign优化
+            zipAlignEnabled false
+            // 启用资源压缩（由Android Gradle plugin执行）
+            shrinkResources false
+            // 指定混淆保留规则文件
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    // 启用dataBinding
+    dataBinding {
+        enabled = true
+    }
+}
+
+dependencies {
+    // base
+    implementation roots.appcompat
+    implementation roots.material
+    testImplementation roots.junit
+    androidTestImplementation roots["ext-junit"]
+    androidTestImplementation roots["espresso-core"]
+    implementation roots.constraintlayout
+    // add library
+}

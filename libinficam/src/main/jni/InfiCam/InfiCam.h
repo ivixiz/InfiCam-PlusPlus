@@ -57,6 +57,9 @@ private:
 	const void * inficam_jni;
 	UVCDevice dev;
 	InfiFrame * infiframe{};
+	bool is_p2_pro = false;
+	int uvc_width = 0;
+	int uvc_height = 0;
 	AutoShutterData auto_shut_data{false, 0, 0, 0};
 	steady_clock::time_point calibration_shutter_time; //time since start of last calibration
 	steady_clock::time_point settle_start_time; //time since last upsetting event (startup, range change)

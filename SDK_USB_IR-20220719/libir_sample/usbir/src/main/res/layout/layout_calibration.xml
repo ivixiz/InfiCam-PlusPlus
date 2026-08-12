@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:paddingLeft="10dp"
+    android:paddingRight="10dp">
+
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <!-- line 1 -->
+        <TextView
+            android:id="@+id/textView"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:lines="1"
+            android:text="@string/single_point_temperature"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/etSinglePointTemp"
+            android:layout_width="150dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/textView"
+            android:ems="10"
+            android:inputType="number"
+            android:text="373"
+            android:textColor="@color/white" />
+
+        <Button
+            android:id="@+id/singlepointsumit"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignBottom="@id/etSinglePointTemp"
+            android:layout_toRightOf="@id/etSinglePointTemp"
+            android:text="@string/single_point_calibration"
+            android:textAllCaps="false" />
+
+        <!-- line 2  -->
+        <TextView
+            android:id="@+id/textView2"
+            android:layout_width="130dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/etSinglePointTemp"
+            android:ellipsize="end"
+            android:lines="1"
+            android:text="@string/low_temperature"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/etLowPointTemp"
+            android:layout_width="130dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/textView2"
+            android:ems="10"
+            android:inputType="number"
+            android:text="373"
+            android:textColor="@color/white" />
+
+        <TextView
+            android:id="@+id/textView3"
+            android:layout_width="130dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/etSinglePointTemp"
+            android:layout_alignStart="@id/etHighPointTemp"
+            android:layout_toRightOf="@id/textView2"
+            android:ellipsize="end"
+            android:lines="1"
+            android:text="@string/high_temperature"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/etHighPointTemp"
+            android:layout_width="130dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/textView3"
+            android:layout_toRightOf="@id/etLowPointTemp"
+            android:ems="10"
+            android:inputType="number"
+            android:text="673"
+            android:textColor="@color/white" />
+
+        <Button
+            android:id="@+id/cancel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/etHighPointTemp"
+            android:text="@string/cancel_calibration"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/doiblepointsumit"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/singlepointsumit"
+            android:layout_toRightOf="@+id/etHighPointTemp"
+            android:text="@string/submit_low"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/endpointsumit"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/singlepointsumit"
+            android:layout_toRightOf="@+id/etHighPointTemp"
+            android:text="@string/submit_high"
+            android:textAllCaps="false"
+            android:visibility="invisible" />
+
+    </RelativeLayout>
+
+    <!-- -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:id="@+id/revcover"
+            android:layout_width="110dp"
+            android:lines="1"
+            android:ellipsize="end"
+            android:layout_height="wrap_content"
+            android:text="@string/pot_calibration"
+            android:textColor="@color/white" />
+
+        <Spinner
+            android:id="@+id/spnRecover"
+            android:layout_width="110dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/revcover"
+            android:spinnerMode="dialog" />
+
+        <Button
+            android:id="@+id/bengin"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_toRightOf="@id/spnRecover"
+            android:text="@string/ready"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/start"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_toRightOf="@id/bengin"
+            android:text="@string/begin"
+            android:textAllCaps="false" />
+    </RelativeLayout>
+
+    <!-- -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:id="@+id/blind"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/bad_pixel"
+            android:textColor="@color/white" />
+
+        <TextView
+            android:id="@+id/blind3"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignRight="@id/y"
+            android:text="Y"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/x"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/blind"
+            android:layout_marginTop="3dp"
+            android:ems="10"
+            android:inputType="number"
+            android:text="123"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/y"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/blind"
+            android:layout_marginLeft="1dp"
+            android:layout_marginTop="2dp"
+            android:layout_toRightOf="@id/x"
+            android:ems="10"
+            android:inputType="number"
+            android:text="45"
+            android:textColor="@color/white" />
+
+        <Button
+            android:id="@+id/add_dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_toRightOf="@id/y"
+            android:text="@string/submit"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/rm_dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_marginLeft="0dp"
+            android:layout_toRightOf="@id/add_dp"
+            android:text="@string/cancel"
+            android:textAllCaps="false" />
+
+    </RelativeLayout>
+
+    <!-- -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/savecfg"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/save_calibration"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/restorecfg"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/restore_factory"
+            android:textAllCaps="false" />
+    </LinearLayout>
+
+    <!-- 点线框测温 -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnPointLineRectTemp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/temp_measure"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/btnFrameMaxMinTemp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/frame_temp"
+            android:textAllCaps="false" />
+
+    </LinearLayout>
+
+    <!-- -->
+    <Switch
+        android:id="@+id/switchGain"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:showText="true"
+        android:text="GAIN SEL"
+        android:textColor="@color/white"
+        android:textOff="L"
+        android:textOn="H" />
+
+
+</LinearLayout>

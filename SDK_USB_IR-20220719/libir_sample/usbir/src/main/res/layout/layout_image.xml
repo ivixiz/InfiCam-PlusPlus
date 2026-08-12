@@ -1,0 +1,378 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingLeft="5dp"
+    android:paddingRight="5dp">
+
+    <!-- -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/zoomup"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="zoom up"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/zoomdown"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="zoom down"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/derotate"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="derotate"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/btnRotate"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="rotate"
+            android:textAllCaps="false" />
+
+    </LinearLayout>
+
+    <!-- -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/zoomPositionUp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="zoom position up"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/zoomPositionDown"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="zoom position down"
+            android:textAllCaps="false" />
+
+    </LinearLayout>
+
+    <!-- -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/mirror"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="mirror"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/flip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="flip"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/flip_mirror"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="flip+mirror"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/none"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="none"
+            android:textAllCaps="false" />
+
+    </LinearLayout>
+
+    <!-- -->
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/linearLayout3"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:id="@+id/textView8"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:text="TNR"
+            android:textColor="@color/white"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent"
+            tools:ignore="MissingConstraints" />
+
+        <Spinner
+            android:id="@+id/TNR"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:spinnerMode="dialog"
+            app:layout_constraintLeft_toLeftOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/textView8" />
+
+        <TextView
+            android:id="@+id/textView9"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:text="SNR"
+            android:textColor="@color/white"
+            app:layout_constraintLeft_toRightOf="@+id/textView8"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <Spinner
+            android:id="@+id/SNR"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:spinnerMode="dialog"
+            app:layout_constraintLeft_toRightOf="@+id/TNR"
+            app:layout_constraintTop_toBottomOf="@+id/textView9" />
+
+        <TextView
+            android:id="@+id/textView10"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:text="DDE"
+            android:textColor="@color/white"
+            app:layout_constraintLeft_toRightOf="@+id/textView9"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <Spinner
+            android:id="@+id/DDE"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="165dp"
+            android:spinnerMode="dialog"
+            app:layout_constraintLeft_toRightOf="@+id/SNR"
+            app:layout_constraintTop_toBottomOf="@+id/textView10" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!-- -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:id="@+id/BRIGHTNESStext"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:text="brightness"
+            android:textColor="@color/white" />
+
+        <TextView
+            android:id="@+id/CONTRASTtext"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:layout_alignLeft="@id/CONTRAST"
+            android:text="contrast"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/CONTRAST"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/CONTRASTtext"
+            android:layout_toRightOf="@id/BRIGHTNESS"
+            android:inputType="number"
+            android:textColor="@color/white" />
+
+        <EditText
+            android:id="@+id/BRIGHTNESS"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/CONTRASTtext"
+            android:inputType="number"
+            android:textColor="@color/white" />
+
+        <Button
+            android:id="@+id/setIR"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_toRightOf="@id/CONTRAST"
+            android:text="set"
+            android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/btnSaveConfig"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_toRightOf="@id/setIR"
+            android:text="save config"
+            android:textAllCaps="false" />
+
+    </RelativeLayout>
+
+    <!-- -->
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/relativeLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <!-- -->
+        <TextView
+            android:id="@+id/textView4"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:text="AGC mode"
+            android:textColor="@color/white"
+            app:layout_constraintLeft_toLeftOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <ToggleButton
+            android:id="@+id/ONOFF_AGC"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:textAllCaps="false"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/textView4" />
+
+        <!-- -->
+        <TextView
+            android:id="@+id/tvAGC"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:text="AGC"
+            android:textColor="@color/white"
+            app:layout_constraintLeft_toRightOf="@+id/textView4"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <Spinner
+            android:id="@+id/AGC"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:spinnerMode="dialog"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintLeft_toRightOf="@id/ONOFF_AGC"
+            app:layout_constraintTop_toBottomOf="@+id/tvAGC" />
+
+        <!-- -->
+        <TextView
+            android:id="@+id/MAXGAINtext"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:text="MAXGAIN"
+            android:textColor="@color/white"
+            app:layout_constraintLeft_toRightOf="@+id/tvAGC"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <EditText
+            android:id="@+id/MAXGAIN"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:ems="10"
+            android:inputType="numberDecimal"
+            android:textColor="@color/white"
+            app:layout_constraintLeft_toRightOf="@+id/AGC"
+            app:layout_constraintTop_toBottomOf="@+id/MAXGAINtext" />
+
+        <!-- -->
+        <TextView
+            android:id="@+id/BOStext"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:text="BOS"
+            android:textColor="@color/white"
+            app:layout_constraintLeft_toRightOf="@+id/MAXGAINtext"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <EditText
+            android:id="@+id/BOS"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:ems="10"
+            android:inputType="numberDecimal"
+            android:textColor="@color/white"
+            app:layout_constraintLeft_toRightOf="@+id/MAXGAIN"
+            app:layout_constraintTop_toBottomOf="@+id/BOStext" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <!-- -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="80dp"
+                android:layout_height="wrap_content"
+                android:text="flyer mode"
+                android:textColor="@color/white"
+                app:layout_constraintLeft_toLeftOf="parent"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <ToggleButton
+                android:id="@+id/ONOFF_Flyer"
+                android:layout_width="80dp"
+                android:layout_height="wrap_content"
+                android:textAllCaps="false"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/textView4" />
+
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/setagc"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="set AGC"
+            android:textAllCaps="false"/>
+
+        <Button
+            android:id="@+id/reload"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="reload default image params "
+            android:textAllCaps="false" />
+
+    </LinearLayout>
+
+    <!-- 自适应功能 -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="90dp"
+            android:layout_height="wrap_content"
+            android:text="adaption en"
+            android:textColor="@color/white"
+            app:layout_constraintLeft_toLeftOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <ToggleButton
+            android:id="@+id/ONOFF_Adaption"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:textAllCaps="false"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/textView4" />
+
+    </LinearLayout>
+
+</LinearLayout>
