@@ -53,6 +53,7 @@ public abstract class USBMonitor extends BroadcastReceiver {
 	public void stop() { /* Call this in onDestroy()/onStop(), matching start() call. */
 		try {
 			registered = false;
+			callbacks.clear();
 			ctx.unregisterReceiver(this); /* Prevent resurrection of dead Activities. */
 		} catch (Exception e) {
 			/* We don't care, probably wasn't registered yet. */
@@ -98,16 +99,21 @@ public abstract class USBMonitor extends BroadcastReceiver {
 			case UsbManager.ACTION_USB_DEVICE_ATTACHED:
 				scan();
 				break;
-			case UsbManager.ACTION_USB_DEVICE_DETACHED:
-				onDisconnect(dev);
-				break;
+		case UsbManager.ACTION_USB_DEVICE_DETACHED:
+			if (dev != null)
+				callbacks.remove(dev); // Never deliver a late permission result for a detached device.
+			onDisconnect(dev);
+			break;
 			case ACTION_USB_PERMISSION:
 				ConnectCallback cb = callbacks.remove(dev);
 				if (cb == null)
 					return;
-				if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+				boolean stillPresent = dev != null && manager != null &&
+						manager.getDeviceList().containsKey(dev.getDeviceName());
+				if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && stillPresent) {
 					_connect(dev, cb);
-				} else cb.onPermissionDenied(dev);
+				} else if (stillPresent) cb.onPermissionDenied(dev);
+				else cb.onFailed(dev);
 				break;
 		}
 	}

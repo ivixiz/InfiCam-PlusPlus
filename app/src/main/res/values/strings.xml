@@ -11,6 +11,10 @@
 	<string name="msg_permdenied_audio">Audio permission denied.</string>
 	<string name="msg_permdenied_storage">Storage permission denied.</string>
 	<string name="msg_failrecord">Failed to start recording.</string>
+	<string name="msg_share_failed">Failed to share image.</string>
+	<string name="msg_web_started">Web View: %s</string>
+	<string name="msg_web_stopped">Web View stopped.</string>
+	<string name="msg_web_failed">Failed to start Web View.</string>
 	<string name="msg_zoom">Zoom: %d%%</string>
 	<string name="msg_overtemp">Warning! Do not point at very hot objects! (Tap shutter button to unlock)</string>
 
@@ -31,6 +35,8 @@
 	<string name="btn_settings_measure">Measurement settings</string>
 	<string name="btn_lock">Lock range</string>
 	<string name="btn_gallery">Gallery</string>
+	<string name="btn_share">Share</string>
+	<string name="btn_web_view">Web View</string>
 
 	<string name="dialog_set_main">Settings</string>
 	<string name="dialog_set_therm">Thermometry Settings</string>

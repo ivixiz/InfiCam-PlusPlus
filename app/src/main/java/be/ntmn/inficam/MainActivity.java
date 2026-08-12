@@ -57,8 +57,8 @@ public class MainActivity extends BaseActivity {
 	private SurfaceMuxer.InputSurface inputSurface; /* Input surface for the thermal image. */
 	private SurfaceMuxer.ThroughSurface thruSurface; /* We sharpen separately to do it lo-res. */
 	private SurfaceMuxer.InputSurface videoSurface; /* To draw video from the normal camera. */
-	private Overlay overlayScreen, overlayRecord, overlayPicture;
-	private SurfaceMuxer.OutputSurface outScreen, outRecord;
+	private Overlay overlayScreen, overlayRecord, overlayPicture, overlayWeb;
+	private SurfaceMuxer.OutputSurface outScreen, outRecord, outWeb;
 	private final Overlay.Data overlayData = new Overlay.Data();
 	private final Overlay.Data renderOverlayData = new Overlay.Data();
 	private int iMode;
@@ -69,7 +69,11 @@ public class MainActivity extends BaseActivity {
 	private int picWidth = 1024, picHeight = 768;
 	private int vidWidth = 1024, vidHeight = 768;
 	private boolean takePic = false;
+	private volatile boolean sharePic = false;
 	private volatile boolean disconnecting = false;
+	private final Object usbLifecycleLock = new Object();
+	private boolean usbConnectionPending = false;
+	private boolean activityStarted = false;
 	private final SurfaceRecorder recorder = new SurfaceRecorder();
 	private boolean recordAudio;
 	private final Rect rect = new Rect(); /* To use during frames, to avoid allocating it there. */
@@ -85,7 +89,11 @@ public class MainActivity extends BaseActivity {
 	private LinearLayout buttonsLeft, buttonsRight;
 	private ConstraintLayout.LayoutParams buttonsLeftLayout, buttonsRightLayout;
 	private SliderDouble rangeSlider;
-	private ImageButton buttonPhoto;
+	private ImageButton buttonPhoto, buttonShare, buttonWebView;
+	private TextView webViewAddress;
+	private WebViewServer webViewServer;
+	private long lastWebCaptureNs;
+	private static final long WEB_FRAME_INTERVAL_NS = 40000000L; // target camera rate: 25 FPS
 	private boolean rotate = false;
 	private int orientation = 0;
 	private boolean swapControls = false;
@@ -187,6 +195,8 @@ public class MainActivity extends BaseActivity {
 	private final USBMonitor usbMonitor = new USBMonitor() {
 		@Override
 		public void onDeviceFound(UsbDevice p_usb_device) {
+			if (!activityStarted || usbConnection != null || usbConnectionPending)
+				return;
 			if(p_usb_device.getProductName() == null){
 				return;
 			}
@@ -225,17 +235,21 @@ public class MainActivity extends BaseActivity {
 			}
 
 			usb_device = p_usb_device;
+			usbConnectionPending = true;
+			final UsbDevice foundDevice = p_usb_device;
 
 			/* Connecting to a UVC device needs camera permission. */
 			askPermission(Manifest.permission.CAMERA, granted -> {
 				if (!granted) {
+					usbConnectionPending = false;
 					messageView.showMessage(R.string.msg_permdenied_cam);
 					return;
 				}
-				connect(usb_device, new ConnectCallback() {
+				connect(foundDevice, new ConnectCallback() {
 						@Override
 						public void onConnected(UsbDevice dev, UsbDeviceConnection conn) {
 							disconnect(); /* Important! Frame callback not allowed during connect. */
+							usbConnectionPending = false;
 							usb_device = dev;
 							usbConnection = conn;
 							disconnecting = false;
@@ -245,13 +259,16 @@ public class MainActivity extends BaseActivity {
 						}
 
 					@Override
-					public void onPermissionDenied(UsbDevice dev) {
-						messageView.showMessage(R.string.msg_permdenied_usb);
-					}
+						public void onPermissionDenied(UsbDevice dev) {
+							usbConnectionPending = false;
+							messageView.showMessage(R.string.msg_permdenied_usb);
+						}
 
 					@Override
-					public void onFailed(UsbDevice dev) {
-						messageView.showMessage(getString(R.string.msg_connect_failed));
+						public void onFailed(UsbDevice dev) {
+							usbConnectionPending = false;
+							messageView.showMessage(getString(R.string.msg_connect_failed));
+							scheduleReconnect(700);
 					}
 				});
 			});
@@ -259,7 +276,17 @@ public class MainActivity extends BaseActivity {
 
 		@Override
 		public void onDisconnect(UsbDevice dev) {
-			if (dev.equals(usb_device)) { disconnect(); }
+			if (dev != null && dev.equals(usb_device)) {
+				usbConnectionPending = false;
+				disconnect();
+				scheduleReconnect(400);
+			}
+		}
+	};
+	private final Runnable reconnectRunnable = () -> {
+		if (activityStarted && usbConnection == null && !usbConnectionPending) {
+			usb_device = null;
+			usbMonitor.scan();
 		}
 	};
 
@@ -580,7 +607,11 @@ public class MainActivity extends BaseActivity {
 	private void startCameraConnectThread(UsbDevice dev, UsbDeviceConnection conn, int token) {
 		new Thread(() -> {
 			try {
-				infiCam.connect(conn.getFileDescriptor());
+				synchronized (usbLifecycleLock) {
+					if (!isCurrentConnection(token, conn))
+						return;
+					infiCam.connect(conn.getFileDescriptor());
+				}
 				int width = infiCam.getWidth();
 				int height = infiCam.getHeight();
 				float[][] ranges = infiCam.getRanges();
@@ -597,13 +628,21 @@ public class MainActivity extends BaseActivity {
 				if (!isCurrentConnection(token, conn))
 					return;
 
-				infiCam.startStream();
+				synchronized (usbLifecycleLock) {
+					if (!isCurrentConnection(token, conn))
+						return;
+					infiCam.startStream();
+				}
 				if (!isCurrentConnection(token, conn))
 					return;
 				/* Start accepting frames immediately. P2 Pro has no calibration phase;
 				 * delaying this until settings synchronisation finishes can otherwise
 				 * leave an already-running UVC stream invisible. */
-				infiCam.setFrameCallback(frameCallback);
+				synchronized (usbLifecycleLock) {
+					if (!isCurrentConnection(token, conn))
+						return;
+					infiCam.setFrameCallback(frameCallback);
+				}
 
 				suppressCalibrationRequest = true;
 				try {
@@ -788,12 +827,80 @@ public class MainActivity extends BaseActivity {
 			buttonPhoto.setColorFilter(Color.RED);
 		}
 
+		if (sharePic && buttonShare != null) {
+			try {
+				Bitmap shareBitmap = renderCapture(data);
+				sharePic = false;
+				buttonShare.setEnabled(true);
+				buttonShare.setColorFilter(null);
+				Util.shareImage(this, shareBitmap, msg -> messageView.showMessage(msg));
+			} catch (RuntimeException e) {
+				sharePic = false;
+				buttonShare.setEnabled(true);
+				buttonShare.setColorFilter(null);
+				messageView.showMessage(R.string.msg_share_failed);
+				Log.w("inficam", "Unable to render image for sharing", e);
+			}
+		}
+
+		if (webViewServer != null && webViewServer.isRunning() && outWeb != null &&
+				System.nanoTime() - lastWebCaptureNs >= WEB_FRAME_INTERVAL_NS) {
+			lastWebCaptureNs = System.nanoTime();
+			try {
+				overlayWeb.setSize(outWeb.width, outWeb.height);
+				drawFrame(outWeb, overlayWeb, false, data);
+				Bitmap webBitmap = outWeb.getBitmap();
+				webViewServer.publish(webBitmap);
+				webBitmap.recycle();
+			} catch (RuntimeException e) {
+				Log.w("inficam", "Web View frame failed", e);
+			}
+		}
+
 		if (outScreen != null)
 			timings.screenSwapNs = drawFrame(outScreen, overlayScreen, true, data);
 		if (outRecord != null)
 			timings.recordSwapNs = drawFrame(outRecord, overlayRecord, true, data);
 
 		return timings;
+	}
+
+	private Bitmap renderCapture(Overlay.Data data) {
+		int w = picWidth, h = picHeight;
+		if (orientation == Surface.ROTATION_0 || orientation == Surface.ROTATION_180) {
+			h ^= w;
+			w ^= h;
+			h ^= w;
+		}
+		SurfaceMuxer.OutputSurface outPicture =
+				new SurfaceMuxer.OutputSurface(surfaceMuxer, null, w, h);
+		overlayPicture.setSize(w, h);
+		drawFrame(outPicture, overlayPicture, false, data);
+		Bitmap bitmap = outPicture.getBitmap();
+		outPicture.release();
+		return bitmap;
+	}
+
+	private void toggleWebView() {
+		if (webViewServer == null)
+			return;
+		if (webViewServer.isRunning()) {
+			webViewServer.stop();
+			webViewAddress.setVisibility(View.GONE);
+			buttonWebView.setColorFilter(null);
+			messageView.showMessage(R.string.msg_web_stopped);
+			return;
+		}
+		try {
+			String url = webViewServer.start();
+			webViewAddress.setText(url);
+			webViewAddress.setVisibility(View.VISIBLE);
+			buttonWebView.setColorFilter(Color.RED);
+			messageView.showMessage(getString(R.string.msg_web_started, url));
+		} catch (IOException e) {
+			messageView.showMessage(R.string.msg_web_failed);
+			Log.w("inficam", "Unable to start Web View", e);
+		}
 	}
 
 	private void overTempLockout() {
@@ -841,6 +948,10 @@ public class MainActivity extends BaseActivity {
 				new SurfaceMuxer.InputSurface(surfaceMuxer));
 		overlayPicture = new Overlay(this,
 				new SurfaceMuxer.InputSurface(surfaceMuxer));
+		overlayWeb = new Overlay(this,
+				new SurfaceMuxer.InputSurface(surfaceMuxer));
+		outWeb = new SurfaceMuxer.OutputSurface(surfaceMuxer, null, 640, 480);
+		webViewServer = new WebViewServer();
 
 		/* We use it later. */
 		videoSurface = new SurfaceMuxer.InputSurface(surfaceMuxer);
@@ -911,6 +1022,19 @@ public class MainActivity extends BaseActivity {
 				} else takePic = true;
 			}
 		});
+
+		buttonShare = findViewById(R.id.buttonShare);
+		buttonShare.setOnClickListener(view -> {
+			if (usbConnection != null && !sharePic) {
+				sharePic = true;
+				buttonShare.setEnabled(false);
+				buttonShare.setColorFilter(Color.RED);
+			}
+		});
+
+		buttonWebView = findViewById(R.id.buttonWebView);
+		webViewAddress = findViewById(R.id.webViewAddress);
+		buttonWebView.setOnClickListener(view -> toggleWebView());
 
 		ImageButton buttonPalette = findViewById(R.id.buttonPalette);
 		buttonPalette.setOnClickListener(view -> {
@@ -1012,6 +1136,7 @@ public class MainActivity extends BaseActivity {
 	@Override
 	protected void onStart() {
 		super.onStart();
+		activityStarted = true;
 		settings.load();
 		settingsMeasure.load();
 		settingsPalette.load();
@@ -1057,19 +1182,31 @@ public class MainActivity extends BaseActivity {
 
 	@Override
 	protected void onStop() {
-		imgCompressThread.shutdown();
-		imgCompressThread = null;
+		activityStarted = false;
+		handler.removeCallbacks(reconnectRunnable);
+		if (imgCompressThread != null) {
+			imgCompressThread.shutdown();
+			imgCompressThread = null;
+		}
 		unregisterReceiver(batteryRecevier);
 		DisplayManager displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
 		displayManager.unregisterDisplayListener(displayListener);
 		stopRecording();
 		disconnect();
+		if (webViewServer != null)
+			webViewServer.stop();
+		if (webViewAddress != null)
+			webViewAddress.setVisibility(View.GONE);
 		usbMonitor.stop();
 		super.onStop();
 	}
 
 	@Override
 	protected void onDestroy() {
+		if (outWeb != null) {
+			outWeb.release();
+			outWeb = null;
+		}
 		surfaceMuxer.release();
 		super.onDestroy();
 	}
@@ -1090,18 +1227,30 @@ public class MainActivity extends BaseActivity {
 			thruSurface.rotate90 = true;
 			buttonsLeft.setOrientation(LinearLayout.HORIZONTAL);
 			buttonsRight.setOrientation(LinearLayout.HORIZONTAL);
-			buttonsLeftLayout.width = ViewGroup.LayoutParams.MATCH_PARENT;
-			buttonsLeftLayout.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+			/* Recreate these params instead of reusing a portrait/landscape params object;
+			 * Android can retain the previous zero height when the activity is resumed. */
+			buttonsLeftLayout = new ConstraintLayout.LayoutParams(0,
+					ViewGroup.LayoutParams.WRAP_CONTENT);
+			buttonsRightLayout = new ConstraintLayout.LayoutParams(0,
+					0);
+			/* Both horizontal edges are constrained; 0dp lets ConstraintLayout resolve the
+			 * available width reliably after a reconnect/configuration change. */
 			buttonsLeftLayout.topToTop = R.id.mainLayout;
 			buttonsLeftLayout.bottomToBottom = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeftLayout.leftToLeft = R.id.mainLayout;
 			buttonsLeftLayout.rightToRight = R.id.mainLayout;
-			buttonsRightLayout.width = ViewGroup.LayoutParams.MATCH_PARENT;
-			buttonsRightLayout.height = ViewGroup.LayoutParams.WRAP_CONTENT;
-			buttonsRightLayout.topToTop = ConstraintLayout.LayoutParams.UNSET;
+			buttonsLeftLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
+			buttonsLeftLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
+			buttonsRightLayout.width = 0;
+			buttonsRightLayout.height = 0;
+			buttonsRightLayout.bottomMargin = (int) (16.0f *
+					getResources().getDisplayMetrics().density);
+			buttonsRightLayout.topToTop = R.id.mainLayout;
 			buttonsRightLayout.bottomToBottom = R.id.mainLayout;
 			buttonsRightLayout.leftToLeft = R.id.mainLayout;
 			buttonsRightLayout.rightToRight = R.id.mainLayout;
+			buttonsRightLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
+			buttonsRightLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeft.setLayoutParams(buttonsLeftLayout);
 			buttonsRight.setLayoutParams(buttonsRightLayout);
 			buttonsLeft.setLayoutParams(buttonsLeftLayout);
@@ -1123,17 +1272,21 @@ public class MainActivity extends BaseActivity {
 			buttonsLeft.setOrientation(LinearLayout.VERTICAL);
 			buttonsRight.setOrientation(LinearLayout.VERTICAL);
 			buttonsLeftLayout.width = ViewGroup.LayoutParams.WRAP_CONTENT;
-			buttonsLeftLayout.height = ViewGroup.LayoutParams.MATCH_PARENT;
+			buttonsLeftLayout.height = 0;
 			buttonsLeftLayout.topToTop = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeftLayout.bottomToBottom = R.id.mainLayout;
 			buttonsLeftLayout.leftToLeft = R.id.mainLayout;
 			buttonsLeftLayout.rightToRight = R.id.mainLayout;
+			buttonsLeftLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
+			buttonsLeftLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
 			buttonsRightLayout.width = ViewGroup.LayoutParams.WRAP_CONTENT;
-			buttonsRightLayout.height = ViewGroup.LayoutParams.MATCH_PARENT;
+			buttonsRightLayout.height = 0;
 			buttonsRightLayout.topToTop = R.id.mainLayout;
 			buttonsRightLayout.bottomToBottom = ConstraintLayout.LayoutParams.UNSET;
 			buttonsRightLayout.leftToLeft = R.id.mainLayout;
 			buttonsRightLayout.rightToRight = R.id.mainLayout;
+			buttonsRightLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
+			buttonsRightLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
 			rlp.topToTop = R.id.mainLayout;
 			rlp.topToBottom = ConstraintLayout.LayoutParams.UNSET;
 			rlp.leftToRight = ConstraintLayout.LayoutParams.UNSET;
@@ -1184,6 +1337,12 @@ public class MainActivity extends BaseActivity {
 		}
 	}
 
+	private void scheduleReconnect(long delayMs) {
+		handler.removeCallbacks(reconnectRunnable);
+		if (activityStarted)
+			handler.postDelayed(reconnectRunnable, delayMs);
+	}
+
 	private void showSettings(Settings settings) {
 		if (activeSettingsDialog == settingsTherm && activeSettingsDialog != settings) {
 			activeSettingsDialog = null;
@@ -1211,17 +1370,34 @@ public class MainActivity extends BaseActivity {
 
 	private void disconnect() {
 		acceptCameraSettings = false;
+		sharePic = false;
+		if (buttonShare != null) {
+			buttonShare.setEnabled(true);
+			buttonShare.setColorFilter(null);
+		}
 		connectGeneration++;
 		setCalibrationUi(false);
 		overTempLockoutActive = false;
 		stopRecording();
-		infiCam.setFrameCallback(null); //disable frames coming in
 		disconnecting = true;
-		infiCam.stopStream();
-		infiCam.disconnect();
-		if (usbConnection != null) { usbConnection.close(); }
-		usbConnection = null;
-		usb_device = null;
+		UsbDeviceConnection oldConnection;
+		synchronized (usbLifecycleLock) {
+			oldConnection = usbConnection;
+			usbConnection = null;
+			usb_device = null;
+			try {
+				infiCam.setFrameCallback(null); // disable frames before stopping native stream
+				infiCam.stopStream();
+				infiCam.disconnect();
+			} catch (RuntimeException e) {
+				Log.w("inficam", "Ignoring error while disconnecting USB camera", e);
+			}
+		}
+		if (oldConnection != null) {
+			try { oldConnection.close(); } catch (RuntimeException e) {
+				Log.w("inficam", "Ignoring error while closing USB connection", e);
+			}
+		}
 		messageView.setMessage(R.string.msg_disconnected);
 	}
 

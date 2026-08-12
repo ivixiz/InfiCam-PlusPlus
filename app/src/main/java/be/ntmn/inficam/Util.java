@@ -20,6 +20,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
+import androidx.core.content.FileProvider;
 import androidx.core.graphics.ColorUtils;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -114,6 +115,46 @@ public class Util {
 				writeImage(ctx, bmp, Bitmap.CompressFormat.JPEG, "image/jpeg", ".jpg", quality);
 				break;
 		}
+	}
+
+	/** Shares a temporary JPEG without requiring storage permission. */
+	public static void shareImage(Context ctx, Bitmap bmp, ErrorCallback onError) {
+		if (bmp == null)
+			return;
+		final Context appCtx = ctx.getApplicationContext();
+		final Context startCtx = ctx;
+		IO_EXECUTOR.execute(() -> {
+			File file = null;
+			try {
+				File dir = new File(appCtx.getCacheDir(), "shared_images");
+				if (!dir.exists() && !dir.mkdirs())
+					throw new IOException("Unable to create share cache");
+				file = new File(dir, "inficam_" + System.currentTimeMillis() + ".jpg");
+				try (FileOutputStream out = new FileOutputStream(file)) {
+					if (!bmp.compress(Bitmap.CompressFormat.JPEG, 92, out))
+						throw new IOException("Unable to encode image");
+				}
+				Uri uri = FileProvider.getUriForFile(appCtx,
+						appCtx.getPackageName() + ".fileprovider", file);
+				Intent send = new Intent(Intent.ACTION_SEND);
+				send.setType("image/jpeg");
+				send.putExtra(Intent.EXTRA_STREAM, uri);
+				send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+				Intent chooser = Intent.createChooser(send, appCtx.getString(R.string.btn_share));
+				new Handler(Looper.getMainLooper()).post(() -> startCtx.startActivity(chooser));
+			} catch (Exception e) {
+				if (file != null)
+					//noinspection ResultOfMethodCallIgnored
+					file.delete();
+				if (onError != null)
+					new Handler(Looper.getMainLooper()).post(() -> onError.onError(
+							e.getMessage() == null ? appCtx.getString(R.string.msg_share_failed) :
+								e.getMessage()));
+			} finally {
+				if (!bmp.isRecycled())
+					bmp.recycle();
+			}
+		});
 	}
 
 	/*
