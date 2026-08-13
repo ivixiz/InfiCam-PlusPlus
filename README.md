@@ -7,8 +7,10 @@ A **fork** of fork of InfiCam from Netman that adds support for raw camera modes
     1st press — starts recording the plot.
     2nd press — stops recording.
     3rd press — clears the current plot.
+<img width="1080" height="2400" alt="image" src="https://github.com/user-attachments/assets/fb6fb0f1-eefa-4030-83bb-09b982b1084e" />
 - Added Web Control. You can now remotely view the thermal camera from any device with a web browser connected to the same Wi-Fi network using the generated IP address. This allows you to mount your phone above the object being tested and perform thermal analysis remotely from a computer, as well as save the results as videos or images. (The Thermal-Time Chart is not yet available in the web interface.)
-Minor layout fixes when switching between portrait and landscape orientation.
+<img width="1195" height="993" alt="image" src="https://github.com/user-attachments/assets/92bcd761-5340-4511-97b0-3bd8a02590cf" />
+- Minor layout fixes when switching between portrait and landscape orientation.
 
 
 Downloads available at:
