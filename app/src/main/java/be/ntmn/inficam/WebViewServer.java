@@ -333,12 +333,24 @@ public final class WebViewServer {
 
 	private static String getLocalIp() {
 		try {
-			for (NetworkInterface network : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-				if (!network.isUp() || network.isLoopback())
-					continue;
-				for (InetAddress address : Collections.list(network.getInetAddresses())) {
-					if (address instanceof Inet4Address && !address.isLoopbackAddress())
-						return address.getHostAddress();
+			java.util.List<NetworkInterface> interfaces =
+					Collections.list(NetworkInterface.getNetworkInterfaces());
+			/* Prefer the LAN interface. A phone can have Wi-Fi and LTE active at the
+			 * same time; returning LTE's CGNAT address makes Web Control unreachable
+			 * from the computer on the same Wi-Fi network. */
+			for (int pass = 0; pass < 2; ++pass) {
+				for (NetworkInterface network : interfaces) {
+					if (!network.isUp() || network.isLoopback())
+						continue;
+					String name = network.getName().toLowerCase(java.util.Locale.US);
+					boolean lan = name.startsWith("wlan") || name.startsWith("wifi") ||
+							name.startsWith("eth") || name.startsWith("usb") || name.startsWith("rndis");
+					if ((pass == 0) != lan)
+						continue;
+					for (InetAddress address : Collections.list(network.getInetAddresses())) {
+						if (address instanceof Inet4Address && !address.isLoopbackAddress())
+							return address.getHostAddress();
+					}
 				}
 			}
 		} catch (SocketException ignored) { }
