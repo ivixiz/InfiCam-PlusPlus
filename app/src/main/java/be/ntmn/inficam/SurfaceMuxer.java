@@ -460,6 +460,8 @@ public class SurfaceMuxer {
 	public void init() { /* Initialize EGL context. */
 		if (eglContext != EGL14.EGL_NO_CONTEXT)
 			deinit();
+		bitmapTexture = 0;
+		bitmapProgram = 0;
 		eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
 		if (eglDisplay == EGL14.EGL_NO_DISPLAY)
 			throw new RuntimeException("Unable to get EGL14 display.");
@@ -539,7 +541,11 @@ public class SurfaceMuxer {
 		for (Object o : surfaces) {
 			if (o instanceof InputSurface)
 				((InputSurface) o).deinit();
-			/* OutputSurfaces don't need deinit, they'll live until next init(). */
+			/* EGL window/pbuffer surfaces belong to the context/display that is being
+			 * destroyed. Leaving their handles alive makes the next init() try to
+			 * use stale EGL objects when returning from the background. */
+			if (o instanceof OutputSurface)
+				((OutputSurface) o).deinit();
 		}
 		if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
 			EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE,
@@ -552,6 +558,8 @@ public class SurfaceMuxer {
 		}
 		eglDisplay = EGL14.EGL_NO_DISPLAY;
 		eglContext = EGL14.EGL_NO_CONTEXT;
+		bitmapTexture = 0;
+		bitmapProgram = 0;
 	}
 
 	public void release() {

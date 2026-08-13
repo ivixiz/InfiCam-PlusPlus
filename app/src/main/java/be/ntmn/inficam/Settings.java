@@ -9,11 +9,15 @@ import android.util.Log;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.text.InputType;
+import android.text.TextWatcher;
+import android.text.Editable;
 import androidx.annotation.Nullable;
 
 /* TODO To add profiles i want to just make a function to load and store all the sharedprefs to a
@@ -407,6 +411,48 @@ public abstract class Settings extends LinearLayout {
 		void setText(int i) {
 			title.setText(getContext().getString(res, Util.formatTemp((float) i / div, tempUnit)));
 		}
+	}
+
+	/** A compact persisted decimal input used for values that need a wide range. */
+	public abstract class SettingFloatInput extends Setting {
+		private final float def, min, max;
+		private EditText input;
+		private boolean updating;
+		SettingFloatInput(String name, int res, float def, float min, float max) {
+			super(name, res); this.def = def; this.min = min; this.max = max;
+		}
+		@Override void init(Settings set) {
+			LinearLayout row = new LinearLayout(getContext());
+			row.setOrientation(LinearLayout.HORIZONTAL);
+			row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+			TextView label = new TextView(getContext()); label.setText(res);
+			row.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+			input = new EditText(getContext());
+			input.setSingleLine(true); input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+			input.setSelectAllOnFocus(true);
+			row.addView(input, new LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT));
+			input.addTextChangedListener(new TextWatcher() {
+				public void beforeTextChanged(CharSequence s, int st, int c, int a) { }
+				public void onTextChanged(CharSequence s, int st, int before, int count) { }
+				public void afterTextChanged(Editable e) {
+					if (updating) return;
+					try {
+						float v = clamp(Float.parseFloat(e.toString()));
+						ed.putFloat(name, v).commit(); onSet(v); set.handleChange();
+						String normalized = String.format(java.util.Locale.US, "%.6g", v);
+						if (!normalized.equals(e.toString())) { updating = true; input.setText(normalized); input.setSelection(input.length()); updating = false; }
+					}
+					catch (NumberFormatException ignored) { }
+				}
+			});
+			set.addView(row);
+		}
+		private int dp(int value) { return (int)(value * getResources().getDisplayMetrics().density + .5f); }
+		private float clamp(float v) { return Math.max(min, Math.min(max, v)); }
+		private void setTo(float v) { updating = true; input.setText(String.format(java.util.Locale.US, "%.6g", clamp(v))); input.setSelection(input.length()); updating = false; onSet(clamp(v)); }
+		@Override void load() { float v = sp.getFloat(name, def); v = clamp(v); ed.putFloat(name, v).commit(); setTo(v); }
+		@Override void setDefault() { ed.putFloat(name, def).commit(); load(); }
+		abstract void onSet(float value);
 	}
 
 	public abstract class SettingButton extends Setting {

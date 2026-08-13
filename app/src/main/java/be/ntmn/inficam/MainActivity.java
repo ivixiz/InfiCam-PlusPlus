@@ -79,6 +79,8 @@ public class MainActivity extends BaseActivity {
 	private boolean usbConnectionPending = false;
 	private boolean activityStarted = false;
 	private final SurfaceRecorder recorder = new SurfaceRecorder();
+	private final SurfaceRecorder chartRecorder = new SurfaceRecorder();
+	private SurfaceMuxer.OutputSurface outChartRecord;
 	private boolean recordAudio;
 	private final Rect rect = new Rect(); /* To use during frames, to avoid allocating it there. */
 
@@ -127,6 +129,7 @@ public class MainActivity extends BaseActivity {
 	private float latestSensorMax = NaN;
 	private long latestFrameSequence = 0;
 	private boolean renderPending = false;
+	private volatile boolean renderingEnabled = false;
 	private static final boolean RENDER_TIMING_LOGS = true;
 	private long renderStatsStartNs = 0;
 	private long incomingFrameCount = 0;
@@ -157,6 +160,9 @@ public class MainActivity extends BaseActivity {
 	};
 
 	private Bitmap imgCompressBitmap;
+	private Bitmap imgCompressChartBitmap;
+	private float chartSampleRateSeconds = 0.1f;
+	private boolean exportChartSeparately;
 
 	private class ImgCompressThread extends Thread {
 		private volatile boolean stop = false;
@@ -179,6 +185,11 @@ public class MainActivity extends BaseActivity {
 					Util.writeImage(getApplicationContext(), imgCompressBitmap, imgType,
 							imgQuality);
 					imgCompressBitmap.recycle();
+					if (imgCompressChartBitmap != null) {
+						Util.writeImage(getApplicationContext(), imgCompressChartBitmap, imgType, imgQuality);
+						imgCompressChartBitmap.recycle();
+						imgCompressChartBitmap = null;
+					}
 				} catch (Exception e) {
 					handler.post(() -> messageView.showMessage(e.getMessage()));
 				}
@@ -352,7 +363,11 @@ public class MainActivity extends BaseActivity {
 			@Override
 			public void onFrame(InfiCam.FrameInfo fi, float[] temp) {
 				/* Note this is called from another thread. */
+				if (!renderingEnabled)
+					return;
 				synchronized (frameLock) {
+					if (!renderingEnabled)
+						return;
 					if (renderStatsStartNs == 0)
 						renderStatsStartNs = System.nanoTime();
 					if (latestTempBuffer.length != temp.length)
@@ -408,7 +423,7 @@ public class MainActivity extends BaseActivity {
 			long sequence;
 			float sensorMax;
 			synchronized (frameLock) {
-				if (latestMmac == null || inputSurface.surface == null) {
+				if (!renderingEnabled || latestMmac == null || inputSurface.surface == null) {
 					renderPending = false;
 					return;
 				}
@@ -838,6 +853,7 @@ public class MainActivity extends BaseActivity {
 		if (takePic && imgCompressThread == null) {
 			messageView.showMessage(R.string.msg_permdenied_storage);
 		} else if (takePic && imgCompressThread.lock.tryLock()) {
+			imgCompressChartBitmap = null;
 			int w = picWidth, h = picHeight;
 			if (orientation == Surface.ROTATION_0 || orientation == Surface.ROTATION_180) {
 				h ^= w;
@@ -850,7 +866,12 @@ public class MainActivity extends BaseActivity {
 			drawFrame(outPicture, overlayPicture, false, data);
 			Bitmap picture = outPicture.getBitmap();
 			outPicture.release();
-			imgCompressBitmap = addTimeChart(picture);
+			if (exportChartSeparately && timeChartState != 0 && timeChart != null) {
+				imgCompressChartBitmap = timeChart.snapshot();
+				imgCompressBitmap = picture;
+			} else {
+				imgCompressBitmap = addTimeChart(picture);
+			}
 			imgCompressThread.cond.signal();
 			imgCompressThread.lock.unlock();
 			takePic = false;
@@ -892,7 +913,18 @@ public class MainActivity extends BaseActivity {
 		if (outScreen != null)
 			timings.screenSwapNs = drawFrame(outScreen, overlayScreen, true, data);
 		if (outRecord != null)
-			timings.recordSwapNs = drawFrame(outRecord, overlayRecord, true, data, true);
+			timings.recordSwapNs = drawFrame(outRecord, overlayRecord, true, data,
+				!exportChartSeparately);
+		if (outChartRecord != null && timeChart != null) {
+			Bitmap chart = timeChart.snapshot();
+			if (chart != null) {
+				outChartRecord.clear(1, 1, 1, 1);
+				outChartRecord.drawBitmap(chart, 0, 0, outChartRecord.width, outChartRecord.height);
+				chart.recycle();
+				outChartRecord.setPresentationTime(inputSurface.surfaceTexture.getTimestamp());
+				outChartRecord.swapBuffers();
+			}
+		}
 
 		return timings;
 	}
@@ -924,7 +956,8 @@ public class MainActivity extends BaseActivity {
 		int chartWidth = landscape ? bitmap.getWidth() * 38 / 100 : bitmap.getWidth();
 		int chartHeight = landscape ? bitmap.getHeight() :
 				chart.getHeight() * bitmap.getWidth() / chart.getWidth();
-		int gap = landscape ? 0 : Math.max(0, bitmap.getHeight() * 9 / 300);
+		/* Exported composition is contiguous, matching the chart/video layout. */
+		int gap = 0;
 		Bitmap combined = Bitmap.createBitmap(
 				landscape ? bitmap.getWidth() + chartWidth : bitmap.getWidth(),
 				landscape ? bitmap.getHeight() : bitmap.getHeight() + gap + chartHeight,
@@ -1013,7 +1046,8 @@ public class MainActivity extends BaseActivity {
 		if (timeChartState == 0) {
 			timeChartState = 1;
 			timeChart.start(overlayData.tempUnit, overlayData.showMax,
-					 overlayData.showMin, overlayData.showCenter);
+					 overlayData.showMin, overlayData.showCenter,
+					 (long) (chartSampleRateSeconds * 1_000_000_000L));
 			timeChart.setVisibility(View.VISIBLE);
 			/* The chart is a foreground canvas; explicitly keep the control strips
 			 * above it when its height changes. */
@@ -1396,12 +1430,27 @@ public class MainActivity extends BaseActivity {
 	@Override
 	protected void onResume() {
 		super.onResume();
-		surfaceMuxer.init();
+		try {
+			surfaceMuxer.init();
+			renderingEnabled = true;
+		} catch (RuntimeException e) {
+			renderingEnabled = false;
+			Log.e("inficam", "Unable to restore graphics context", e);
+		}
 	}
 
 	@Override
 	protected void onPause() {
-		surfaceMuxer.deinit();
+		renderingEnabled = false;
+		handler.removeCallbacks(renderFrameRunnable);
+		synchronized (frameLock) {
+			renderPending = false;
+	}
+		try {
+			surfaceMuxer.deinit();
+		} catch (RuntimeException e) {
+			Log.w("inficam", "Ignoring graphics cleanup error", e);
+		}
 		takePic = false;
 		super.onPause();
 	}
@@ -1702,6 +1751,11 @@ public class MainActivity extends BaseActivity {
 			outRecord = new SurfaceMuxer.OutputSurface(surfaceMuxer, rsurface);
 			outRecord.setSize(w, h);
 			overlayRecord.setSize(w, h);
+			if (exportChartSeparately && timeChartState != 0 && timeChart != null) {
+				Surface chartSurface = chartRecorder.start(this, w, h, false);
+				outChartRecord = new SurfaceMuxer.OutputSurface(surfaceMuxer, chartSurface);
+				outChartRecord.setSize(w, h);
+			}
 			ImageButton buttonVideo = findViewById(R.id.buttonVideo);
 			buttonVideo.setColorFilter(Color.RED);
 		} catch (IOException e) {
@@ -1714,9 +1768,14 @@ public class MainActivity extends BaseActivity {
 		ImageButton buttonVideo = findViewById(R.id.buttonVideo);
 		buttonVideo.clearColorFilter();
 		recorder.stop();
+		chartRecorder.stop();
 		if (outRecord != null) {
 			outRecord.release();
 			outRecord = null;
+		}
+		if (outChartRecord != null) {
+			outChartRecord.release();
+			outChartRecord = null;
 		}
 	}
 
@@ -1738,6 +1797,12 @@ public class MainActivity extends BaseActivity {
 	public void setSharpening(float value) { inputSurface.sharpening = value; }
 
 	public void setRecordAudio(boolean value) { recordAudio = value; }
+
+	public void setChartSampleRate(float value) {
+		chartSampleRateSeconds = Math.max(1.0f / 25.0f, Math.min(1800.0f, value));
+	}
+
+	public void setExportChartSeparately(boolean value) { exportChartSeparately = value; }
 
 	public void setSwapControls(boolean value) {
 		swapControls = value;

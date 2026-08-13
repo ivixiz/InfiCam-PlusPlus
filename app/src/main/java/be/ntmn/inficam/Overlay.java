@@ -164,6 +164,9 @@ public class Overlay {
 			 * the camera viewport is shortened by Time Chart. */
 			int topClear = Math.max(clear, (int) (0.09f * vRect.width()));
 			int theight = (int) -(paint.descent() + paint.ascent());
+			/* Keep the upper number just a little above the palette, rather than
+			 * leaving it visually detached from the gradient. */
+			int topLabelY = vRect.top + topClear - Math.max(2, theight / 3);
 			int isize = (int) (theight + woutline * vRect.width());
 			int iclear = (int) (clear - (woutline * vRect.width()) / 2.0f);
 			int paletteWidth = (int) (pwidth * vRect.width());
@@ -176,12 +179,12 @@ public class Overlay {
 			if (width <= vRect.width() || !paletteFitsOutside) {
 				drawPalette(cvs,
 						(int) (vRect.right - clear - pwidth * vRect.width()),
-						vRect.top + theight + topClear * 2,
+						vRect.top + theight + topClear,
 						vRect.right - clear,
 						vRect.bottom - theight - clear * 2,
 						settingsPalette.paletteBitmap);
 				Util.formatTemp(sb, Float.isNaN(d.rangeMax) ? d.mmac.max : d.rangeMax, d.tempUnit);
-				drawText(cvs, sb, vRect.right - clear, vRect.top + topClear, false, true);
+				drawText(cvs, sb, vRect.right - clear, topLabelY, false, true);
 				if (!Float.isNaN(d.rangeMax)) {
 					int off = (int) paintTextOutline.measureText(sb, 0, sb.length());
 					lock.setBounds(vRect.right - clear - off - isize, vRect.top + iclear,
@@ -199,12 +202,12 @@ public class Overlay {
 			} else {
 				drawPalette(cvs,
 						vRect.right + clear,
-						vRect.top + theight + topClear * 2,
+						vRect.top + theight + topClear,
 						(int) (vRect.right + clear + pwidth * vRect.width()),
 						vRect.bottom - theight - clear * 2,
 						settingsPalette.paletteBitmap);
 				Util.formatTemp(sb, Float.isNaN(d.rangeMax) ? d.mmac.max : d.rangeMax, d.tempUnit);
-				drawText(cvs, sb, vRect.right + clear, vRect.top + topClear, true, true);
+				drawText(cvs, sb, vRect.right + clear, topLabelY, true, true);
 				if (!Float.isNaN(d.rangeMax)) {
 					int off = (int) paintTextOutline.measureText(sb, 0, sb.length());
 					lock.setBounds(vRect.right + clear + off, vRect.top + iclear,
