@@ -179,7 +179,7 @@ public final class TimeChartView extends View {
 				continue;
 			float y = bottom - (yv - lo) / (hi - lo) * (bottom - top);
 			canvas.drawLine(left, y, right, y, paint);
-			textPaint.setColor(Color.DKGRAY); textPaint.setTextAlign(Paint.Align.RIGHT);
+			textPaint.setColor(Color.BLACK); textPaint.setTextAlign(Paint.Align.RIGHT);
 			canvas.drawText(String.format(Locale.US, "%.1f", yv), left - 5, y + 4, textPaint);
 		}
 		long durationNs = Math.max(effectiveIntervalNs,
@@ -202,6 +202,7 @@ public final class TimeChartView extends View {
 		for (long t = 0; t <= durationNs; t += xStepNs) {
 			float x = left + (float) t / durationNs * (right - left);
 			canvas.drawLine(x, top, x, bottom, paint);
+			textPaint.setColor(Color.BLACK);
 			textPaint.setTextAlign(Paint.Align.CENTER);
 			String label = formatDuration(t, durationNs);
 			float halfWidth = textPaint.measureText(label) * 0.5f;

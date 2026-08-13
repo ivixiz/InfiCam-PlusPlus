@@ -437,13 +437,25 @@ public abstract class Settings extends LinearLayout {
 				public void afterTextChanged(Editable e) {
 					if (updating) return;
 					try {
-						float v = clamp(Float.parseFloat(e.toString()));
-						ed.putFloat(name, v).commit(); onSet(v); set.handleChange();
-						String normalized = String.format(java.util.Locale.US, "%.6g", v);
-						if (!normalized.equals(e.toString())) { updating = true; input.setText(normalized); input.setSelection(input.length()); updating = false; }
+						/* Do not clamp or rewrite while the user is typing: values such as
+						 * 0.008 necessarily pass through an intermediate "0" state. */
+						float v = Float.parseFloat(e.toString());
+						if (Float.isFinite(v)) { ed.putFloat(name, v).commit(); onSet(v); set.handleChange(); }
 					}
 					catch (NumberFormatException ignored) { }
 				}
+			});
+			input.setOnFocusChangeListener((view, focused) -> {
+				if (focused) return;
+				try {
+					float v = clamp(Float.parseFloat(input.getText().toString()));
+					ed.putFloat(name, v).commit();
+					updating = true;
+					input.setText(String.format(java.util.Locale.US, "%.6g", v));
+					input.setSelection(input.length());
+					updating = false;
+					onSet(v); set.handleChange();
+				} catch (NumberFormatException ignored) { setTo(def); }
 			});
 			set.addView(row);
 		}
