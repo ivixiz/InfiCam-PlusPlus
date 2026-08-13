@@ -10,6 +10,7 @@
 	android:background="@color/black">
 
 	<FrameLayout
+		android:id="@+id/cameraContainer"
 		android:layout_width="0dp"
 		android:layout_height="0dp"
 		android:layout_marginEnd="0dp"
@@ -55,6 +56,19 @@
 		app:layout_constraintTop_toTopOf="parent"
 		app:layout_constraintBottom_toBottomOf="parent"
 		app:layout_constraintStart_toStartOf="parent">
+
+		<ImageButton
+			android:id="@+id/buttonTimeChart"
+			android:padding="5dp"
+			android:src="@drawable/ic_baseline_show_chart_24"
+			android:contentDescription="@string/btn_time_chart"
+			android:layout_width="40dp"
+			android:layout_height="40dp"
+			android:scaleType="fitCenter"
+			android:layout_margin="5dp"
+			android:hapticFeedbackEnabled="false"
+			app:tint="@color/white"
+			android:background="?android:attr/selectableItemBackground" />
 
 		<ImageButton
 			android:id="@+id/buttonLock"
@@ -129,6 +143,17 @@
 
 	</LinearLayout>
 
+	<be.ntmn.inficam.TimeChartView
+		android:id="@+id/timeChart"
+		android:layout_width="match_parent"
+		android:layout_height="300dp"
+		android:layout_marginBottom="9dp"
+		android:visibility="gone"
+		android:elevation="0dp"
+		app:layout_constraintBottom_toBottomOf="parent"
+		app:layout_constraintStart_toStartOf="parent"
+		app:layout_constraintEnd_toEndOf="parent" />
+
 	<be.ntmn.inficam.SliderDouble
 		android:id="@+id/rangeSlider"
 		android:visibility="gone"
@@ -144,6 +169,7 @@
 		android:layout_width="wrap_content"
 		android:layout_height="wrap_content"
 		android:layout_marginEnd="16dp"
+		android:elevation="12dp"
 		android:orientation="vertical"
 		app:layout_constraintBottom_toBottomOf="parent"
 		app:layout_constraintEnd_toEndOf="parent"

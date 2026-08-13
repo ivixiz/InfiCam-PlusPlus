@@ -160,19 +160,28 @@ public class Overlay {
 
 		if (d.showPalette) {
 			int clear = (int) (pclearance * vRect.width());
+			/* Keep the upper temperature label below the top control strip when
+			 * the camera viewport is shortened by Time Chart. */
+			int topClear = Math.max(clear, (int) (0.09f * vRect.width()));
 			int theight = (int) -(paint.descent() + paint.ascent());
 			int isize = (int) (theight + woutline * vRect.width());
 			int iclear = (int) (clear - (woutline * vRect.width()) / 2.0f);
+			int paletteWidth = (int) (pwidth * vRect.width());
 			paint.setColor(Color.WHITE);
-			if (width <= vRect.width()) {
+			/* When the chart reduces the camera viewport, the image can become
+			 * narrower than the output surface.  There may then be no room outside
+			 * the image on the right; keep the palette inside the image instead of
+			 * drawing it past the screen edge. */
+			boolean paletteFitsOutside = vRect.right + clear + paletteWidth <= width;
+			if (width <= vRect.width() || !paletteFitsOutside) {
 				drawPalette(cvs,
 						(int) (vRect.right - clear - pwidth * vRect.width()),
-						vRect.top + theight + clear * 2,
+						vRect.top + theight + topClear * 2,
 						vRect.right - clear,
 						vRect.bottom - theight - clear * 2,
 						settingsPalette.paletteBitmap);
 				Util.formatTemp(sb, Float.isNaN(d.rangeMax) ? d.mmac.max : d.rangeMax, d.tempUnit);
-				drawText(cvs, sb, vRect.right - clear, vRect.top + clear, false, true);
+				drawText(cvs, sb, vRect.right - clear, vRect.top + topClear, false, true);
 				if (!Float.isNaN(d.rangeMax)) {
 					int off = (int) paintTextOutline.measureText(sb, 0, sb.length());
 					lock.setBounds(vRect.right - clear - off - isize, vRect.top + iclear,
@@ -190,12 +199,12 @@ public class Overlay {
 			} else {
 				drawPalette(cvs,
 						vRect.right + clear,
-						vRect.top + theight + clear * 2,
+						vRect.top + theight + topClear * 2,
 						(int) (vRect.right + clear + pwidth * vRect.width()),
 						vRect.bottom - theight - clear * 2,
 						settingsPalette.paletteBitmap);
 				Util.formatTemp(sb, Float.isNaN(d.rangeMax) ? d.mmac.max : d.rangeMax, d.tempUnit);
-				drawText(cvs, sb, vRect.right + clear, vRect.top + clear, true, true);
+				drawText(cvs, sb, vRect.right + clear, vRect.top + topClear, true, true);
 				if (!Float.isNaN(d.rangeMax)) {
 					int off = (int) paintTextOutline.measureText(sb, 0, sb.length());
 					lock.setBounds(vRect.right + clear + off, vRect.top + iclear,

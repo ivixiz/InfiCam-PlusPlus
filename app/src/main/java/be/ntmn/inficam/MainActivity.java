@@ -9,12 +9,14 @@ import static java.lang.Math.floor;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.content.BroadcastReceiver;
+import android.content.res.Configuration;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Rect;
+import android.graphics.Canvas;
 import android.hardware.display.DisplayManager;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
@@ -91,7 +93,13 @@ public class MainActivity extends BaseActivity {
 	private LinearLayout buttonsLeft, buttonsRight;
 	private ConstraintLayout.LayoutParams buttonsLeftLayout, buttonsRightLayout;
 	private SliderDouble rangeSlider;
-	private ImageButton buttonPhoto, buttonShare, buttonWebView;
+	private FrameLayout cameraContainer;
+	private ImageButton buttonPhoto, buttonShare, buttonWebView, buttonTimeChart;
+	private TimeChartView timeChart;
+	private int timeChartState = 0; // 0 hidden, 1 recording, 2 stopped/visible
+	private static final int TIME_CHART_HEIGHT_DP = 300;
+	private static final int TIME_CHART_BOTTOM_GAP_DP = 9;
+	private static final int TIME_CHART_BUTTON_RESERVE_DP = 72;
 	private TextView webViewAddress;
 	private WebViewServer webViewServer;
 	private boolean webMirror;
@@ -766,6 +774,11 @@ public class MainActivity extends BaseActivity {
 
 	private long drawFrame(SurfaceMuxer.OutputSurface os, Overlay overlay, boolean swap,
 						   Overlay.Data data) {
+		return drawFrame(os, overlay, swap, data, false);
+	}
+
+	private long drawFrame(SurfaceMuxer.OutputSurface os, Overlay overlay, boolean swap,
+						   Overlay.Data data, boolean includeChart) {
 		getRect(rect, os.width, os.height);
 		os.clear(0, 0, 0, 1);
 		thruSurface.draw(
@@ -778,6 +791,18 @@ public class MainActivity extends BaseActivity {
 		);
 		overlay.draw(data, settingsPalette, rect);
 		overlay.surface.draw(os, SurfaceMuxer.DM_LINEAR);
+		if (includeChart && timeChartState != 0 && timeChart != null) {
+			Bitmap chart = timeChart.snapshot();
+			if (chart != null) {
+				boolean landscape = orientation == Surface.ROTATION_90 ||
+						orientation == Surface.ROTATION_270;
+				int cw = landscape ? os.width * 38 / 100 : os.width;
+				int ch = landscape ? os.height : chart.getHeight() * os.width / chart.getWidth();
+				os.drawBitmap(chart, landscape ? os.width - cw : 0,
+						landscape ? 0 : os.height - ch, cw, ch);
+				chart.recycle();
+			}
+		}
 		// TODO draw normal video if needed
 		if (swap) {
 			os.setPresentationTime(inputSurface.surfaceTexture.getTimestamp());
@@ -794,6 +819,9 @@ public class MainActivity extends BaseActivity {
 			/* Don't try stuff when disconnected. */
 			return timings;
 		}
+		if (timeChart != null && timeChart.isRecording() && data.mmac != null)
+			timeChart.sample(data.mmac.max, data.mmac.min, data.mmac.center, data.tempUnit,
+					data.showMax, data.showMin, data.showCenter);
 
 		/* At this point we are certain the frame and the overlayData are matched up with
 		 *   each-other, so now we can do stuff like taking a picture, "the frame" here
@@ -817,11 +845,12 @@ public class MainActivity extends BaseActivity {
 				h ^= w;
 			}
 			SurfaceMuxer.OutputSurface outPicture =
-				new SurfaceMuxer.OutputSurface(surfaceMuxer, null, w, h);
+					new SurfaceMuxer.OutputSurface(surfaceMuxer, null, w, h);
 			overlayPicture.setSize(w, h);
 			drawFrame(outPicture, overlayPicture, false, data);
-			imgCompressBitmap = outPicture.getBitmap();
+			Bitmap picture = outPicture.getBitmap();
 			outPicture.release();
+			imgCompressBitmap = addTimeChart(picture);
 			imgCompressThread.cond.signal();
 			imgCompressThread.lock.unlock();
 			takePic = false;
@@ -863,7 +892,7 @@ public class MainActivity extends BaseActivity {
 		if (outScreen != null)
 			timings.screenSwapNs = drawFrame(outScreen, overlayScreen, true, data);
 		if (outRecord != null)
-			timings.recordSwapNs = drawFrame(outRecord, overlayRecord, true, data);
+			timings.recordSwapNs = drawFrame(outRecord, overlayRecord, true, data, true);
 
 		return timings;
 	}
@@ -881,7 +910,35 @@ public class MainActivity extends BaseActivity {
 		drawFrame(outPicture, overlayPicture, false, data);
 		Bitmap bitmap = outPicture.getBitmap();
 		outPicture.release();
-		return bitmap;
+		return addTimeChart(bitmap);
+	}
+
+	private Bitmap addTimeChart(Bitmap bitmap) {
+		if (bitmap == null || timeChartState == 0 || timeChart == null)
+			return bitmap;
+		Bitmap chart = timeChart.snapshot();
+		if (chart == null)
+			return bitmap;
+		boolean landscape = orientation == Surface.ROTATION_90 ||
+				orientation == Surface.ROTATION_270;
+		int chartWidth = landscape ? bitmap.getWidth() * 38 / 100 : bitmap.getWidth();
+		int chartHeight = landscape ? bitmap.getHeight() :
+				chart.getHeight() * bitmap.getWidth() / chart.getWidth();
+		int gap = landscape ? 0 : Math.max(0, bitmap.getHeight() * 9 / 300);
+		Bitmap combined = Bitmap.createBitmap(
+				landscape ? bitmap.getWidth() + chartWidth : bitmap.getWidth(),
+				landscape ? bitmap.getHeight() : bitmap.getHeight() + gap + chartHeight,
+				Bitmap.Config.ARGB_8888);
+		Canvas canvas = new Canvas(combined);
+		canvas.drawBitmap(bitmap, 0, 0, null);
+		Bitmap scaledChart = Bitmap.createScaledBitmap(chart, chartWidth, chartHeight, true);
+		canvas.drawBitmap(scaledChart, landscape ? bitmap.getWidth() : 0,
+				landscape ? 0 : bitmap.getHeight() + gap, null);
+		if (scaledChart != chart)
+			scaledChart.recycle();
+		chart.recycle();
+		bitmap.recycle();
+		return combined;
 	}
 
 	private void toggleWebView() {
@@ -950,6 +1007,112 @@ public class MainActivity extends BaseActivity {
 				Log.w("inficam", "Unable to prepare Web Control MP4", e);
 			}
 		}, "InfiCam web video").start();
+	}
+
+	private void toggleTimeChart() {
+		if (timeChartState == 0) {
+			timeChartState = 1;
+			timeChart.start(overlayData.tempUnit, overlayData.showMax,
+					 overlayData.showMin, overlayData.showCenter);
+			timeChart.setVisibility(View.VISIBLE);
+			/* The chart is a foreground canvas; explicitly keep the control strips
+			 * above it when its height changes. */
+			if (buttonsLeft != null)
+				buttonsLeft.bringToFront();
+			if (buttonsRight != null)
+				buttonsRight.bringToFront();
+			buttonTimeChart.setColorFilter(Color.RED);
+			updateTimeChartLayout();
+		} else if (timeChartState == 1) {
+			timeChartState = 2;
+			timeChart.stop();
+			buttonTimeChart.setColorFilter(Color.YELLOW);
+		} else {
+			timeChartState = 0;
+			timeChart.setVisibility(View.GONE);
+			buttonTimeChart.setColorFilter(null);
+			updateTimeChartLayout();
+		}
+	}
+
+	private int dp(float value) {
+		return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+	}
+
+	/** Keep the chart and camera in separate vertical regions. */
+	private void updateTimeChartLayout() {
+		if (cameraContainer == null)
+			return;
+		boolean landscape = getResources().getConfiguration().orientation ==
+				Configuration.ORIENTATION_LANDSCAPE;
+		if (timeChart != null) {
+			ConstraintLayout.LayoutParams chartParams =
+					(ConstraintLayout.LayoutParams) timeChart.getLayoutParams();
+			if (landscape && timeChartState != 0) {
+				/* In landscape the chart is a right-hand pane, not a bottom strip. */
+				chartParams.width = 0;
+				chartParams.height = 0;
+				chartParams.startToStart = ConstraintLayout.LayoutParams.UNSET;
+				chartParams.startToEnd = R.id.cameraContainer;
+				chartParams.endToStart = R.id.buttonsRight;
+				chartParams.endToEnd = ConstraintLayout.LayoutParams.UNSET;
+				chartParams.topToTop = R.id.mainLayout;
+				chartParams.bottomToBottom = R.id.mainLayout;
+				chartParams.bottomMargin = 0;
+				chartParams.leftMargin = 0;
+				chartParams.rightMargin = 0;
+			} else {
+				chartParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
+				chartParams.height = dp(TIME_CHART_HEIGHT_DP);
+				chartParams.startToStart = R.id.mainLayout;
+				chartParams.startToEnd = ConstraintLayout.LayoutParams.UNSET;
+				chartParams.endToStart = ConstraintLayout.LayoutParams.UNSET;
+				chartParams.endToEnd = R.id.mainLayout;
+				chartParams.topToTop = ConstraintLayout.LayoutParams.UNSET;
+				chartParams.topToBottom = ConstraintLayout.LayoutParams.UNSET;
+				chartParams.bottomToBottom = R.id.mainLayout;
+				chartParams.bottomMargin = timeChartState == 0 ? 0 :
+						dp(TIME_CHART_BUTTON_RESERVE_DP + TIME_CHART_BOTTOM_GAP_DP);
+				chartParams.leftMargin = 0;
+				chartParams.rightMargin = 0;
+			}
+			timeChart.setLayoutParams(chartParams);
+		}
+		ConstraintLayout.LayoutParams cameraParams =
+				(ConstraintLayout.LayoutParams) cameraContainer.getLayoutParams();
+		if (landscape && timeChartState != 0) {
+			cameraParams.width = 0;
+			cameraParams.height = 0;
+			cameraParams.startToStart = R.id.mainLayout;
+			cameraParams.endToStart = R.id.timeChart;
+			cameraParams.endToEnd = ConstraintLayout.LayoutParams.UNSET;
+			cameraParams.topToTop = R.id.mainLayout;
+			cameraParams.bottomToBottom = R.id.mainLayout;
+			cameraParams.bottomMargin = 0;
+			cameraParams.leftMargin = 0;
+			cameraParams.rightMargin = 0;
+		} else {
+			cameraParams.width = 0;
+			cameraParams.height = 0;
+			cameraParams.startToStart = R.id.mainLayout;
+			cameraParams.endToStart = ConstraintLayout.LayoutParams.UNSET;
+			cameraParams.startToEnd = ConstraintLayout.LayoutParams.UNSET;
+			cameraParams.endToEnd = R.id.mainLayout;
+			cameraParams.topToTop = R.id.mainLayout;
+			cameraParams.topToBottom = ConstraintLayout.LayoutParams.UNSET;
+			cameraParams.bottomToBottom = R.id.mainLayout;
+			cameraParams.bottomMargin = timeChartState == 0 ? 0 : dp(TIME_CHART_HEIGHT_DP +
+					TIME_CHART_BUTTON_RESERVE_DP + TIME_CHART_BOTTOM_GAP_DP);
+			cameraParams.leftMargin = 0;
+			cameraParams.rightMargin = 0;
+		}
+		cameraContainer.setLayoutParams(cameraParams);
+		/* setLayoutParams() can refresh ConstraintLayout's child order.  Keep the
+		 * bottom controls above the chart after every such refresh. */
+		if (buttonsLeft != null)
+			buttonsLeft.bringToFront();
+		if (buttonsRight != null)
+			buttonsRight.bringToFront();
 	}
 
 	private void overTempLockout() {
@@ -1086,6 +1249,11 @@ public class MainActivity extends BaseActivity {
 		webViewAddress = findViewById(R.id.webViewAddress);
 		buttonWebView.setOnClickListener(view -> toggleWebView());
 
+		timeChart = findViewById(R.id.timeChart);
+		cameraContainer = findViewById(R.id.cameraContainer);
+		buttonTimeChart = findViewById(R.id.buttonTimeChart);
+		buttonTimeChart.setOnClickListener(view -> toggleTimeChart());
+
 		ImageButton buttonPalette = findViewById(R.id.buttonPalette);
 		buttonPalette.setOnClickListener(view -> {
 			settingsPalette.getPalette().setTo((settingsPalette.getPalette().get() + 1) %
@@ -1186,6 +1354,9 @@ public class MainActivity extends BaseActivity {
 		buttonsRight = findViewById(R.id.buttonsRight);
 		buttonsLeftLayout = (ConstraintLayout.LayoutParams) buttonsLeft.getLayoutParams();
 		buttonsRightLayout = (ConstraintLayout.LayoutParams) buttonsRight.getLayoutParams();
+		/* The initial display callback is not guaranteed to fire after setContentView().
+		 * Apply the portrait/landscape constraints once all control views exist. */
+		updateOrientation();
 	}
 
 	@Override
@@ -1277,31 +1448,38 @@ public class MainActivity extends BaseActivity {
 
 	@SuppressLint("SourceLockedOrientationActivity")
 	private void updateOrientation() { /* Called on start by SettingsMain. */
+		if (rangeSlider == null || buttonsLeft == null || buttonsRight == null ||
+				cameraContainer == null)
+			return;
 		WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
 		orientation = wm.getDefaultDisplay().getRotation();
+		boolean landscapeLayout = getResources().getConfiguration().orientation ==
+				Configuration.ORIENTATION_LANDSCAPE;
 		ConstraintLayout.LayoutParams rlp = (ConstraintLayout.LayoutParams) rangeSlider.getLayoutParams();
-		if (orientation == Surface.ROTATION_0 || orientation == Surface.ROTATION_180) {
+		if (!landscapeLayout) {
 			thruSurface.rotate90 = true;
 			buttonsLeft.setOrientation(LinearLayout.HORIZONTAL);
 			buttonsRight.setOrientation(LinearLayout.HORIZONTAL);
 			/* Recreate these params instead of reusing a portrait/landscape params object;
 			 * Android can retain the previous zero height when the activity is resumed. */
-			buttonsLeftLayout = new ConstraintLayout.LayoutParams(0,
+			buttonsLeftLayout = new ConstraintLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
 					ViewGroup.LayoutParams.WRAP_CONTENT);
-			buttonsRightLayout = new ConstraintLayout.LayoutParams(0,
+			buttonsRightLayout = new ConstraintLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
 					ViewGroup.LayoutParams.WRAP_CONTENT);
 			/* Both horizontal edges are constrained; 0dp lets ConstraintLayout resolve the
 			 * available width reliably after a reconnect/configuration change. */
 			buttonsLeftLayout.topToTop = R.id.mainLayout;
 			buttonsLeftLayout.bottomToBottom = ConstraintLayout.LayoutParams.UNSET;
+			buttonsLeftLayout.topToBottom = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeftLayout.leftToLeft = R.id.mainLayout;
 			buttonsLeftLayout.rightToRight = R.id.mainLayout;
 			buttonsLeftLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeftLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
-			buttonsRightLayout.width = 0;
+			buttonsRightLayout.width = ViewGroup.LayoutParams.WRAP_CONTENT;
 			buttonsRightLayout.height = ViewGroup.LayoutParams.WRAP_CONTENT;
 			buttonsRightLayout.topToTop = ConstraintLayout.LayoutParams.UNSET;
 			buttonsRightLayout.bottomToBottom = R.id.mainLayout;
+			buttonsRightLayout.bottomToTop = ConstraintLayout.LayoutParams.UNSET;
 			buttonsRightLayout.leftToLeft = R.id.mainLayout;
 			buttonsRightLayout.rightToRight = R.id.mainLayout;
 			buttonsRightLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
@@ -1313,11 +1491,14 @@ public class MainActivity extends BaseActivity {
 			buttonsLeft.setGravity(Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM);
 			buttonsRight.setGravity(Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM);
 			rlp.rightToLeft = ConstraintLayout.LayoutParams.UNSET;
+			rlp.rightToRight = ConstraintLayout.LayoutParams.UNSET;
 			rlp.topToTop = ConstraintLayout.LayoutParams.UNSET;
 			//noinspection SuspiciousNameCombination
 			rlp.topToBottom = R.id.buttonsLeft;
 			rlp.leftToRight = ConstraintLayout.LayoutParams.UNSET;
 			rlp.leftToLeft = R.id.mainLayout;
+			rlp.bottomToBottom = ConstraintLayout.LayoutParams.UNSET;
+			rlp.bottomToTop = ConstraintLayout.LayoutParams.UNSET;
 			rlp.width = WindowManager.LayoutParams.MATCH_PARENT;
 			rlp.height = WindowManager.LayoutParams.WRAP_CONTENT;
 			rangeSlider.setLayoutParams(rlp);
@@ -1326,19 +1507,25 @@ public class MainActivity extends BaseActivity {
 			thruSurface.rotate90 = false;
 			buttonsLeft.setOrientation(LinearLayout.VERTICAL);
 			buttonsRight.setOrientation(LinearLayout.VERTICAL);
-			buttonsLeftLayout.width = ViewGroup.LayoutParams.WRAP_CONTENT;
-			buttonsLeftLayout.height = 0;
-			buttonsLeftLayout.topToTop = ConstraintLayout.LayoutParams.UNSET;
+			/* Recreate both side panels for landscape.  Reusing the portrait
+			 * params leaves a zero height after a rotation, which clips all icons. */
+			buttonsLeftLayout = new ConstraintLayout.LayoutParams(
+					ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+			buttonsRightLayout = new ConstraintLayout.LayoutParams(
+					ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+			buttonsLeftLayout.topToTop = R.id.mainLayout;
 			buttonsLeftLayout.bottomToBottom = R.id.mainLayout;
+			buttonsLeftLayout.topToBottom = ConstraintLayout.LayoutParams.UNSET;
+			buttonsLeftLayout.bottomToTop = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeftLayout.leftToLeft = R.id.mainLayout;
-			buttonsLeftLayout.rightToRight = R.id.mainLayout;
+			buttonsLeftLayout.rightToRight = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeftLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeftLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
-			buttonsRightLayout.width = ViewGroup.LayoutParams.WRAP_CONTENT;
-			buttonsRightLayout.height = 0;
 			buttonsRightLayout.topToTop = R.id.mainLayout;
-			buttonsRightLayout.bottomToBottom = ConstraintLayout.LayoutParams.UNSET;
-			buttonsRightLayout.leftToLeft = R.id.mainLayout;
+			buttonsRightLayout.bottomToBottom = R.id.mainLayout;
+			buttonsRightLayout.topToBottom = ConstraintLayout.LayoutParams.UNSET;
+			buttonsRightLayout.bottomToTop = ConstraintLayout.LayoutParams.UNSET;
+			buttonsRightLayout.leftToLeft = ConstraintLayout.LayoutParams.UNSET;
 			buttonsRightLayout.rightToRight = R.id.mainLayout;
 			buttonsRightLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
 			buttonsRightLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
@@ -1351,8 +1538,14 @@ public class MainActivity extends BaseActivity {
 			rlp.height = WindowManager.LayoutParams.MATCH_PARENT;
 			if (swapControls) {
 				rlp.rightToLeft = R.id.buttonsLeft;
-				buttonsLeft.setLayoutParams(buttonsRightLayout);
-				buttonsRight.setLayoutParams(buttonsLeftLayout);
+				ConstraintLayout.LayoutParams leftParams = buttonsLeftLayout;
+				ConstraintLayout.LayoutParams rightParams = buttonsRightLayout;
+				leftParams.leftToLeft = ConstraintLayout.LayoutParams.UNSET;
+				leftParams.rightToRight = R.id.mainLayout;
+				rightParams.leftToLeft = R.id.mainLayout;
+				rightParams.rightToRight = ConstraintLayout.LayoutParams.UNSET;
+				buttonsLeft.setLayoutParams(leftParams);
+				buttonsRight.setLayoutParams(rightParams);
 				buttonsLeft.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
 				buttonsRight.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
 			} else {
@@ -1376,6 +1569,16 @@ public class MainActivity extends BaseActivity {
 				thruSurface.rotate = rotate;
 			}
 		}
+		updateTimeChartLayout();
+	}
+
+	@Override
+	public void onConfigurationChanged(@NonNull Configuration newConfig) {
+		super.onConfigurationChanged(newConfig);
+		/* Configuration is authoritative for layout direction; the display rotation
+		 * callback can arrive one frame earlier while returning from landscape. */
+		if (rangeSlider != null)
+			handler.post(this::updateOrientation);
 	}
 
 	private void hideSettingsDialog() {

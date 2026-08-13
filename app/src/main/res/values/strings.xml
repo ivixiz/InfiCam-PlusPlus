@@ -38,6 +38,7 @@
 	<string name="btn_gallery">Gallery</string>
 	<string name="btn_share">Share</string>
 	<string name="btn_web_view">Web View</string>
+	<string name="btn_time_chart">Time chart</string>
 
 	<string name="dialog_set_main">Settings</string>
 	<string name="dialog_set_therm">Thermometry Settings</string>

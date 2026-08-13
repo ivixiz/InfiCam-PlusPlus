@@ -4,6 +4,7 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Matrix;
 import android.graphics.SurfaceTexture;
+import android.opengl.GLUtils;
 import android.opengl.EGL14;
 import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
@@ -91,6 +92,12 @@ public class SurfaceMuxer {
 			ByteBuffer.allocateDirect(8 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
 	private final FloatBuffer pVertex =
 			ByteBuffer.allocateDirect(8 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+	private final FloatBuffer pBitmapVertex =
+			ByteBuffer.allocateDirect(8 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+	private final FloatBuffer pBitmapTexCoord =
+			ByteBuffer.allocateDirect(8 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+	private int bitmapProgram;
+	private int bitmapTexture;
 
 	public static class InputSurface {
 		private SurfaceMuxer muxer;
@@ -315,6 +322,43 @@ public class SurfaceMuxer {
 			muxer.checkEglError("eglPresentationTimeANDROID");
 		}
 
+		/** Draw a bitmap over this output surface (used for the optional chart in recordings). */
+		public void drawBitmap(Bitmap bitmap, int x, int y, int w, int h) {
+			if (bitmap == null || muxer.eglContext == EGL14.EGL_NO_CONTEXT || w <= 0 || h <= 0)
+				return;
+			makeCurrent();
+			if (muxer.bitmapTexture == 0) {
+				int[] texture = new int[1];
+				GLES20.glGenTextures(1, texture, 0);
+				muxer.bitmapTexture = texture[0];
+			}
+			GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, muxer.bitmapTexture);
+			GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER,
+					GLES20.GL_LINEAR);
+			GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER,
+					GLES20.GL_LINEAR);
+			GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0);
+			float l = 2.0f * x / width - 1.0f;
+			float r = 2.0f * (x + w) / width - 1.0f;
+			float t = 1.0f - 2.0f * y / height;
+			float b = 1.0f - 2.0f * (y + h) / height;
+			muxer.pBitmapVertex.clear();
+			muxer.pBitmapVertex.put(new float[]{l, b, r, b, l, t, r, t}).rewind();
+			muxer.pBitmapTexCoord.clear();
+			muxer.pBitmapTexCoord.put(new float[]{0, 1, 1, 1, 0, 0, 1, 0}).rewind();
+			GLES20.glUseProgram(muxer.bitmapProgram);
+			int ph = GLES20.glGetAttribLocation(muxer.bitmapProgram, "vPosition");
+			GLES20.glVertexAttribPointer(ph, 2, GLES20.GL_FLOAT, false, 0, muxer.pBitmapVertex);
+			GLES20.glEnableVertexAttribArray(ph);
+			int th = GLES20.glGetAttribLocation(muxer.bitmapProgram, "vTexCoord");
+			GLES20.glVertexAttribPointer(th, 2, GLES20.GL_FLOAT, false, 0, muxer.pBitmapTexCoord);
+			GLES20.glEnableVertexAttribArray(th);
+			GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+			GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, muxer.bitmapTexture);
+			GLES20.glUniform1i(GLES20.glGetUniformLocation(muxer.bitmapProgram, "sTexture"), 0);
+			GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+		}
+
 		public void release() {
 			deinit();
 			if (muxer != null)
@@ -466,6 +510,18 @@ public class SurfaceMuxer {
 			GLES20.glDeleteShader(fshader); /* Just decreases refcount. */
 		}
 		GLES20.glDeleteShader(vshader); /* Shader will still live until the programs die. */
+		int bv = loadShader(GLES20.GL_VERTEX_SHADER,
+				"attribute vec2 vPosition; attribute vec2 vTexCoord; varying vec2 texCoord; " +
+				"void main(){ texCoord=vTexCoord; gl_Position=vec4(vPosition,0.0,1.0); }");
+		int bf = loadShader(GLES20.GL_FRAGMENT_SHADER,
+				"precision mediump float; uniform sampler2D sTexture; varying vec2 texCoord; " +
+				"void main(){ gl_FragColor=texture2D(sTexture,texCoord); }");
+		bitmapProgram = GLES20.glCreateProgram();
+		GLES20.glAttachShader(bitmapProgram, bv);
+		GLES20.glAttachShader(bitmapProgram, bf);
+		GLES20.glLinkProgram(bitmapProgram);
+		GLES20.glDeleteShader(bv);
+		GLES20.glDeleteShader(bf);
 
 		/* Initialize any surfaces we have. */
 		for (Object o : surfaces) {
