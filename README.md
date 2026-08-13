@@ -1,4 +1,15 @@
-A fork of InfiCam from Netman that adds support for raw camera modes. 
+A **fork** of fork of InfiCam from Netman that adds support for raw camera modes. 
+
+## Features of this fork:
+- Added support for P2 Pro cameras. (I only have a P2 Pro, so it’s the only model I was able to add and test support for.)
+- Added a Share button that captures an image from the thermal camera and lets you share it wherever you need.
+- Added a Thermal-Time Chart that plots temperature values (min, max, and center point) over time:
+    1st press — starts recording the plot.
+    2nd press — stops recording.
+    3rd press — clears the current plot.
+- Added Web Control. You can now remotely view the thermal camera from any device with a web browser connected to the same Wi-Fi network using the generated IP address. This allows you to mount your phone above the object being tested and perform thermal analysis remotely from a computer, as well as save the results as videos or images. (The Thermal-Time Chart is not yet available in the web interface.)
+Minor layout fixes when switching between portrait and landscape orientation.
+
 
 Downloads available at:
 https://github.com/diminDDL/InfiCamPlus/releases
