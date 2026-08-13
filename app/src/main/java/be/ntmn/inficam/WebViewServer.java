@@ -1,18 +1,21 @@
 package be.ntmn.inficam;
 
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.ByteArrayOutputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Set;
@@ -20,6 +23,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /** A small dependency-free MJPEG server for the current thermal view. */
 public final class WebViewServer {
+	public interface CommandHandler {
+		void onCommand(String command, String value);
+	}
 	private static final int FIRST_PORT = 8080;
 	private static final int LAST_PORT = 8090;
 	private final Object frameLock = new Object();
@@ -31,10 +37,22 @@ public final class WebViewServer {
 	private volatile ServerSocket serverSocket;
 	private volatile int port;
 	private Thread acceptThread;
+	private volatile CommandHandler commandHandler;
+	private volatile byte[] latestSnapshot;
+	private volatile String snapshotMime = "image/jpeg";
+	private volatile int snapshotType = Util.IMGTYPE_JPEG;
+	private volatile int snapshotQuality = 92;
+	private volatile byte[] latestVideo;
+
+	public void setCommandHandler(CommandHandler handler) {
+		commandHandler = handler;
+	}
 
 	public synchronized String start() throws IOException {
 		if (running)
 			return getUrl();
+		if (getLocalIp() == null)
+			throw new IOException("No local network address");
 		IOException lastError = null;
 		for (int candidate = FIRST_PORT; candidate <= LAST_PORT; ++candidate) {
 			try {
@@ -75,7 +93,8 @@ public final class WebViewServer {
 	}
 
 	public String getUrl() {
-		return "http://" + getLocalIp() + ":" + port;
+		String ip = getLocalIp();
+		return "http://" + (ip == null ? "127.0.0.1" : ip) + ":" + port;
 	}
 
 	/** Compresses a copy of the displayed frame; the resulting bytes are immutable. */
@@ -91,6 +110,39 @@ public final class WebViewServer {
 			frameNumber++;
 			frameLock.notifyAll();
 		}
+	}
+
+	/** Publishes the browser download image in the format selected in app settings. */
+	public void publishSnapshot(Bitmap bitmap, int type, int quality) {
+		if (bitmap == null)
+			return;
+		Bitmap source = bitmap;
+		try {
+			if (type == Util.IMGTYPE_PNG565) {
+				source = Bitmap.createBitmap(bitmap.getWidth(), bitmap.getHeight(), Bitmap.Config.RGB_565);
+				android.graphics.Canvas canvas = new android.graphics.Canvas(source);
+				canvas.drawBitmap(bitmap, 0, 0, null);
+			}
+			ByteArrayOutputStream out = new ByteArrayOutputStream(64 * 1024);
+			android.graphics.Bitmap.CompressFormat format = type == Util.IMGTYPE_JPEG
+					? Bitmap.CompressFormat.JPEG : Bitmap.CompressFormat.PNG;
+			if (source.compress(format, quality, out)) {
+				latestSnapshot = out.toByteArray();
+				snapshotMime = format == Bitmap.CompressFormat.JPEG ? "image/jpeg" : "image/png";
+			}
+		} finally {
+			if (source != bitmap)
+				source.recycle();
+		}
+	}
+
+	public void publishVideo(byte[] video) {
+		latestVideo = video;
+	}
+
+	public void setSnapshotFormat(int type, int quality) {
+		snapshotType = type;
+		snapshotQuality = quality;
 	}
 
 	private void acceptLoop() {
@@ -121,7 +173,14 @@ public final class WebViewServer {
 			String path = parts.length > 1 ? parts[1] : "/";
 			String header;
 			while ((header = reader.readLine()) != null && !header.isEmpty()) { /* headers */ }
-			if (path.startsWith("/stream"))
+			if (path.startsWith("/control")) {
+				handleControl(path);
+				writeText(socket, "OK");
+			} else if (path.startsWith("/snapshot")) {
+				serveSnapshot(socket);
+			} else if (path.startsWith("/video")) {
+				serveVideo(socket);
+			} else if (path.startsWith("/stream"))
 				serveStream(socket);
 			else
 				serveIndex(socket);
@@ -132,12 +191,101 @@ public final class WebViewServer {
 		}
 	}
 
+	private void handleControl(String path) {
+		int queryStart = path.indexOf('?');
+		if (queryStart < 0 || commandHandler == null)
+			return;
+		String query = path.substring(queryStart + 1);
+		String command = null, value = "";
+		for (String pair : query.split("&")) {
+			String[] kv = pair.split("=", 2);
+			if (kv.length != 2)
+				continue;
+			try {
+				String key = URLDecoder.decode(kv[0], "UTF-8");
+				String val = URLDecoder.decode(kv[1], "UTF-8");
+				if ("cmd".equals(key)) command = val;
+				if ("value".equals(key)) value = val;
+			} catch (Exception ignored) { }
+		}
+		if (command != null)
+			commandHandler.onCommand(command, value);
+	}
+
+	private void writeText(Socket socket, String text) throws IOException {
+		byte[] body = text.getBytes(StandardCharsets.UTF_8);
+		OutputStream out = socket.getOutputStream();
+		writeHeaders(out, "200 OK", "text/plain; charset=utf-8", body.length);
+		out.write(body);
+		out.flush();
+	}
+
+	private void serveSnapshot(Socket socket) throws IOException {
+		byte[] image = latestSnapshot;
+		String mime = snapshotMime;
+		if (image == null && latestJpeg != null) {
+			if (snapshotType == Util.IMGTYPE_JPEG) {
+				image = latestJpeg;
+				mime = "image/jpeg";
+			} else {
+				Bitmap decoded = BitmapFactory.decodeByteArray(latestJpeg, 0, latestJpeg.length);
+				if (decoded != null) {
+					Bitmap source = decoded;
+					try {
+						if (snapshotType == Util.IMGTYPE_PNG565) {
+							source = Bitmap.createBitmap(decoded.getWidth(), decoded.getHeight(),
+									Bitmap.Config.RGB_565);
+							new Canvas(source).drawBitmap(decoded, 0, 0, null);
+						}
+						ByteArrayOutputStream encoded = new ByteArrayOutputStream(64 * 1024);
+						source.compress(Bitmap.CompressFormat.PNG, snapshotQuality, encoded);
+						image = encoded.toByteArray();
+						mime = "image/png";
+					} finally {
+						if (source != decoded) source.recycle();
+						decoded.recycle();
+					}
+				}
+			}
+		}
+		if (image == null) {
+			writeText(socket, "No frame yet");
+			return;
+		}
+		OutputStream out = socket.getOutputStream();
+		writeHeaders(out, "200 OK", mime, image.length);
+		out.write(image);
+		out.flush();
+	}
+
+	private void serveVideo(Socket socket) throws IOException {
+		byte[] video = latestVideo;
+		if (video == null) {
+			writeHeaders(socket.getOutputStream(), "404 Not Found", "text/plain", 17);
+			socket.getOutputStream().write("No video ready".getBytes(StandardCharsets.US_ASCII));
+			return;
+		}
+		OutputStream out = socket.getOutputStream();
+		writeHeaders(out, "200 OK", "video/mp4", video.length);
+		out.write(video);
+		out.flush();
+	}
+
 	private void serveIndex(Socket socket) throws IOException {
 		byte[] body = ("<!doctype html><html><head><meta name=viewport " +
 				"content=width=device-width,initial-scale=1><title>InfiCam</title></head>" +
-				"<body style='margin:0;background:#111;color:#eee;text-align:center'>" +
-				"<h3>InfiCam Web View</h3><img src='/stream' " +
-				"style='max-width:100%;height:auto' /></body></html>")
+				"<body style='margin:0;background:#111;color:#eee;text-align:center;font-family:sans-serif'>" +
+				"<h3>InfiCam Web Control</h3><img id='live' src='/stream' " +
+				"style='display:block;width:min(100%,1280px);height:auto;margin:0 auto' /><div style='display:flex;flex-wrap:nowrap;gap:6px;justify-content:center;align-items:center;padding:8px;overflow-x:auto'>" +
+				"<button onclick=cmd('palette')>Palette</button>" +
+				"<button onclick=cmd('mirror')>Mirror</button>" +
+				"<button onclick=cmd('calibrate')>Calibrate</button>" +
+				"<a href='/snapshot' download='inficam'><button>Save Picture</button></a>" +
+				"<button id=rec onclick=record()>Record Video</button></div>" +
+				"<script>function cmd(c){fetch('/control?cmd='+c)}let recording=false;function record(){" +
+				"if(!recording){recording=true;document.getElementById('rec').textContent='Stop Recording';fetch('/control?cmd=record_start')}" +
+				"else{recording=false;document.getElementById('rec').textContent='Saving MP4...';fetch('/control?cmd=record_stop').then(()=>{let n=0;let t=setInterval(()=>{fetch('/video',{method:'HEAD'}).then(r=>{if(r.ok){clearInterval(t);let a=document.createElement('a');a.href='/video?'+Date.now();a.download='inficam.mp4';a.click();document.getElementById('rec').textContent='Record Video'}});if(++n>30)clearInterval(t)},500)})}}" +
+				"</script></body></html>")
 				.getBytes(StandardCharsets.UTF_8);
 		OutputStream out = socket.getOutputStream();
 		writeHeaders(out, "200 OK", "text/html; charset=utf-8", body.length);
@@ -194,6 +342,6 @@ public final class WebViewServer {
 				}
 			}
 		} catch (SocketException ignored) { }
-		return "127.0.0.1";
+		return null;
 	}
 }

@@ -18,6 +18,7 @@ import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
+import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -38,6 +39,7 @@ import androidx.annotation.NonNull;
 import androidx.constraintlayout.widget.ConstraintLayout;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.List;
@@ -92,6 +94,7 @@ public class MainActivity extends BaseActivity {
 	private ImageButton buttonPhoto, buttonShare, buttonWebView;
 	private TextView webViewAddress;
 	private WebViewServer webViewServer;
+	private boolean webMirror;
 	private long lastWebCaptureNs;
 	private static final long WEB_FRAME_INTERVAL_NS = 40000000L; // target camera rate: 25 FPS
 	private boolean rotate = false;
@@ -892,6 +895,7 @@ public class MainActivity extends BaseActivity {
 			return;
 		}
 		try {
+			webViewServer.setSnapshotFormat(imgType, imgQuality);
 			String url = webViewServer.start();
 			webViewAddress.setText(url);
 			webViewAddress.setVisibility(View.VISIBLE);
@@ -901,6 +905,51 @@ public class MainActivity extends BaseActivity {
 			messageView.showMessage(R.string.msg_web_failed);
 			Log.w("inficam", "Unable to start Web View", e);
 		}
+	}
+
+	private void handleWebCommand(String command, String value) {
+		handler.post(() -> {
+			if ("palette".equals(command)) {
+				int next = (settingsPalette.getPalette().get() + 1) % Palette.palettes.length;
+				settingsPalette.getPalette().setTo(next);
+				messageView.shortMessage(Palette.palettes[next].name);
+			} else if ("mode".equals(command)) {
+				setIMode((iMode + 1) % 5);
+			} else if ("mirror".equals(command)) {
+				webMirror = !webMirror;
+				setMirror(webMirror);
+			} else if ("calibrate".equals(command)) {
+				calibrate(false);
+			} else if ("record_start".equals(command)) {
+				if (usbConnection != null && !recorder.isRecording())
+					startRecording(false);
+			} else if ("record_stop".equals(command)) {
+				if (recorder.isRecording()) {
+					stopRecording();
+					publishLastWebVideo();
+				}
+			}
+		});
+	}
+
+	private void publishLastWebVideo() {
+		Uri uri = recorder.getLastFileUri();
+		if (uri == null || webViewServer == null)
+			return;
+		new Thread(() -> {
+			try (InputStream in = getContentResolver().openInputStream(uri)) {
+				if (in == null)
+					return;
+				java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+				byte[] buffer = new byte[64 * 1024];
+				int count;
+				while ((count = in.read(buffer)) != -1)
+					out.write(buffer, 0, count);
+				webViewServer.publishVideo(out.toByteArray());
+			} catch (IOException e) {
+				Log.w("inficam", "Unable to prepare Web Control MP4", e);
+			}
+		}, "InfiCam web video").start();
 	}
 
 	private void overTempLockout() {
@@ -952,6 +1001,7 @@ public class MainActivity extends BaseActivity {
 				new SurfaceMuxer.InputSurface(surfaceMuxer));
 		outWeb = new SurfaceMuxer.OutputSurface(surfaceMuxer, null, 640, 480);
 		webViewServer = new WebViewServer();
+		webViewServer.setCommandHandler(this::handleWebCommand);
 
 		/* We use it later. */
 		videoSurface = new SurfaceMuxer.InputSurface(surfaceMuxer);
@@ -1048,9 +1098,14 @@ public class MainActivity extends BaseActivity {
 		});
 
 		ImageButton buttonLock = findViewById(R.id.buttonLock);
-		buttonLock.setOnClickListener(view -> {
+			buttonLock.setOnClickListener(view -> {
 			synchronized (frameLock) {
 				if (isNaN(overlayData.rangeMin) && isNaN(overlayData.rangeMax)) { //range is not set
+					if (overlayData.mmac == null || isNaN(overlayData.mmac.min) ||
+							isNaN(overlayData.mmac.max)) {
+						messageView.showMessage(R.string.msg_no_frame);
+						return;
+					}
 					overlayData.rangeMin = overlayData.mmac.min;
 					overlayData.rangeMax = overlayData.mmac.max;
 					buttonLock.setImageResource(R.drawable.ic_baseline_lock_24);
@@ -1197,6 +1252,8 @@ public class MainActivity extends BaseActivity {
 			webViewServer.stop();
 		if (webViewAddress != null)
 			webViewAddress.setVisibility(View.GONE);
+		if (buttonWebView != null)
+			buttonWebView.setColorFilter(null);
 		usbMonitor.stop();
 		super.onStop();
 	}
@@ -1232,7 +1289,7 @@ public class MainActivity extends BaseActivity {
 			buttonsLeftLayout = new ConstraintLayout.LayoutParams(0,
 					ViewGroup.LayoutParams.WRAP_CONTENT);
 			buttonsRightLayout = new ConstraintLayout.LayoutParams(0,
-					0);
+					ViewGroup.LayoutParams.WRAP_CONTENT);
 			/* Both horizontal edges are constrained; 0dp lets ConstraintLayout resolve the
 			 * available width reliably after a reconnect/configuration change. */
 			buttonsLeftLayout.topToTop = R.id.mainLayout;
@@ -1242,10 +1299,8 @@ public class MainActivity extends BaseActivity {
 			buttonsLeftLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeftLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
 			buttonsRightLayout.width = 0;
-			buttonsRightLayout.height = 0;
-			buttonsRightLayout.bottomMargin = (int) (16.0f *
-					getResources().getDisplayMetrics().density);
-			buttonsRightLayout.topToTop = R.id.mainLayout;
+			buttonsRightLayout.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+			buttonsRightLayout.topToTop = ConstraintLayout.LayoutParams.UNSET;
 			buttonsRightLayout.bottomToBottom = R.id.mainLayout;
 			buttonsRightLayout.leftToLeft = R.id.mainLayout;
 			buttonsRightLayout.rightToRight = R.id.mainLayout;

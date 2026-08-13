@@ -50,6 +50,7 @@ public class SurfaceRecorder implements Runnable {
 	private boolean muxerStarted;
 	private Thread thread;
 	private Uri fileUri;
+	private Uri lastFileUri;
 	private ParcelFileDescriptor fileDescriptor;
 
 	/* If enabling audio, request audio permission first! */
@@ -194,8 +195,15 @@ public class SurfaceRecorder implements Runnable {
 		}
 		fileDescriptor = null;
 		if (fileUri != null)
+			lastFileUri = fileUri;
+		if (fileUri != null)
 			Util.scanMedia(ctx, fileUri);
 		fileUri = null;
+	}
+
+	/** URI of the last completed MP4 recording, retained for Web Control download. */
+	public Uri getLastFileUri() {
+		return lastFileUri;
 	}
 
 	@Override
