@@ -8,6 +8,7 @@ import static java.lang.Math.floor;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
 import android.content.res.Configuration;
 import android.content.Context;
@@ -34,6 +35,8 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
+import android.widget.EditText;
+import android.text.InputType;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -163,6 +166,8 @@ public class MainActivity extends BaseActivity {
 	private Bitmap imgCompressChartBitmap;
 	private float chartSampleRateSeconds = 0.1f;
 	private boolean exportChartSeparately;
+	private float paletteManualMin = 0.0f;
+	private float paletteManualMax = 100.0f;
 
 	private class ImgCompressThread extends Thread {
 		private volatile boolean stop = false;
@@ -1213,6 +1218,23 @@ public class MainActivity extends BaseActivity {
 				usbMonitor.scan();
 			}
 		});
+		cameraView.setOnTouchListener(new View.OnTouchListener() {
+			private boolean paletteTouch;
+			@Override public boolean onTouch(View view, android.view.MotionEvent event) {
+				if (event.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
+					getRect(rect, view.getWidth(), view.getHeight());
+					paletteTouch = overlayScreen.isPaletteHit((int) event.getX(), (int) event.getY(),
+							rect, overlayData.showPalette);
+					return paletteTouch;
+				}
+				if (paletteTouch && event.getActionMasked() == android.view.MotionEvent.ACTION_UP) {
+					paletteTouch = false;
+					showPaletteRangePopup();
+					return true;
+				}
+				return paletteTouch;
+			}
+		});
 		final ScaleGestureDetector.OnScaleGestureListener scaleListener =
 			new ScaleGestureDetector.OnScaleGestureListener() {
 				private float scaleStart;
@@ -1856,6 +1878,98 @@ public class MainActivity extends BaseActivity {
 		synchronized (frameLock) {
 			overlayData.showPalette = value;
 		}
+	}
+
+	public void setPaletteMin(float value) {
+		paletteManualMin = value;
+		if (!(paletteManualMax > paletteManualMin))
+			paletteManualMax = paletteManualMin + 0.1f;
+		applyManualPaletteRange();
+	}
+
+	public void setPaletteMax(float value) {
+		paletteManualMax = value;
+		if (!(paletteManualMax > paletteManualMin))
+			paletteManualMin = paletteManualMax - 0.1f;
+		applyManualPaletteRange();
+	}
+
+	public void setPaletteAuto() {
+		synchronized (frameLock) {
+			overlayData.rangeMin = NaN;
+			overlayData.rangeMax = NaN;
+		}
+		ImageButton lockButton = findViewById(R.id.buttonLock);
+		if (lockButton != null)
+			lockButton.setImageResource(R.drawable.ic_baseline_lock_open_24);
+		if (rangeSlider != null)
+			rangeSlider.setVisibility(View.GONE);
+	}
+
+	private void applyManualPaletteRange() {
+		synchronized (frameLock) {
+			overlayData.rangeMin = paletteManualMin;
+			overlayData.rangeMax = paletteManualMax;
+		}
+		ImageButton lockButton = findViewById(R.id.buttonLock);
+		if (lockButton != null)
+			lockButton.setImageResource(R.drawable.ic_baseline_lock_open_24);
+		if (rangeSlider != null)
+			rangeSlider.setVisibility(View.GONE);
+	}
+
+	private void showPaletteRangePopup() {
+		LinearLayout content = new LinearLayout(this);
+		content.setOrientation(LinearLayout.VERTICAL);
+		int pad = dp(8);
+		content.setPadding(pad, 0, pad, 0);
+		EditText minInput = new EditText(this);
+		EditText maxInput = new EditText(this);
+		minInput.setSingleLine(true);
+		maxInput.setSingleLine(true);
+		minInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL |
+				InputType.TYPE_NUMBER_FLAG_SIGNED);
+		maxInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL |
+				InputType.TYPE_NUMBER_FLAG_SIGNED);
+		minInput.setHint(getString(R.string.set_palette_min));
+		maxInput.setHint(getString(R.string.set_palette_max));
+		float min = Float.isNaN(overlayData.rangeMin) ? paletteManualMin : overlayData.rangeMin;
+		float max = Float.isNaN(overlayData.rangeMax) ? paletteManualMax : overlayData.rangeMax;
+		minInput.setText(String.format(Locale.US, "%.2f", min));
+		maxInput.setText(String.format(Locale.US, "%.2f", max));
+		content.addView(minInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+				ViewGroup.LayoutParams.WRAP_CONTENT));
+		content.addView(maxInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+				ViewGroup.LayoutParams.WRAP_CONTENT));
+		AlertDialog dialog = new AlertDialog.Builder(this)
+				.setTitle(R.string.palette_range_title)
+				.setView(content)
+				.setNeutralButton(R.string.set_palette_auto, null)
+				.create();
+		dialog.setOnShowListener(ignored -> {
+			dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+				settingsPalette.setAutoRangeMode();
+				dialog.dismiss();
+			});
+			android.text.TextWatcher watcher = new android.text.TextWatcher() {
+				@Override public void beforeTextChanged(CharSequence s, int st, int c, int a) { }
+				@Override public void onTextChanged(CharSequence s, int st, int before, int count) { }
+				@Override public void afterTextChanged(android.text.Editable e) {
+				try {
+					float enteredMin = Float.parseFloat(minInput.getText().toString());
+					float enteredMax = Float.parseFloat(maxInput.getText().toString());
+					if (!Float.isFinite(enteredMin) || !Float.isFinite(enteredMax) ||
+							enteredMax <= enteredMin) return;
+					settingsPalette.setManualValues(enteredMin, enteredMax);
+					setPaletteMin(enteredMin);
+					setPaletteMax(enteredMax);
+				} catch (NumberFormatException ignored) { }
+				}
+			};
+			minInput.addTextChangedListener(watcher);
+			maxInput.addTextChangedListener(watcher);
+		});
+		dialog.show();
 	}
 
 	public void setPicSize(int w, int h) {

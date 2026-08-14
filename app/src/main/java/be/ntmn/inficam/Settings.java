@@ -440,7 +440,7 @@ public abstract class Settings extends LinearLayout {
 						/* Do not clamp or rewrite while the user is typing: values such as
 						 * 0.008 necessarily pass through an intermediate "0" state. */
 						float v = Float.parseFloat(e.toString());
-						if (Float.isFinite(v)) { ed.putFloat(name, v).commit(); onSet(v); set.handleChange(); }
+						if (Float.isFinite(v)) { ed.putFloat(name, v).commit(); onSetByUser(v); set.handleChange(); }
 					}
 					catch (NumberFormatException ignored) { }
 				}
@@ -465,6 +465,7 @@ public abstract class Settings extends LinearLayout {
 		@Override void load() { float v = sp.getFloat(name, def); v = clamp(v); ed.putFloat(name, v).commit(); setTo(v); }
 		@Override void setDefault() { ed.putFloat(name, def).commit(); load(); }
 		abstract void onSet(float value);
+		void onSetByUser(float value) { onSet(value); }
 	}
 
 	public abstract class SettingButton extends Setting {

@@ -86,6 +86,23 @@ public class Overlay {
 		surface.setSize(w, h);
 	}
 
+	/** Returns whether a screen-space touch is on the visible palette strip. */
+	public boolean isPaletteHit(int x, int y, Rect imageRect, boolean show) {
+		if (!show || imageRect == null || imageRect.width() <= 0 || imageRect.height() <= 0)
+			return false;
+		vRect.set(imageRect);
+		int clear = (int) (pclearance * vRect.width());
+		int topClear = Math.max(clear, (int) (0.09f * vRect.width()));
+		int theight = (int) -(paint.descent() + paint.ascent());
+		int paletteWidth = (int) (pwidth * vRect.width());
+		int top = vRect.top + theight + topClear;
+		int bottom = vRect.bottom - theight - clear * 2;
+		boolean outside = vRect.right + clear + paletteWidth <= width && width > vRect.width();
+		int left = outside ? vRect.right + clear : vRect.right - clear - paletteWidth;
+		int right = outside ? vRect.right + clear + paletteWidth : vRect.right - clear;
+		return x >= left - clear && x <= right + clear && y >= top - clear && y <= bottom + clear;
+	}
+
 	public static MinMaxAvgCet computeMmacRect(float[] temp, int left, int top,
 							   int right, int bottom, int stride) {
 		MinMaxAvgCet out = new MinMaxAvgCet();
@@ -169,6 +186,7 @@ public class Overlay {
 			int topLabelY = vRect.top + topClear - Math.max(2, theight / 3);
 			int isize = (int) (theight + woutline * vRect.width());
 			int iclear = (int) (clear - (woutline * vRect.width()) / 2.0f);
+			int topLockY = vRect.top + iclear - Math.max(2, theight / 3);
 			int paletteWidth = (int) (pwidth * vRect.width());
 			paint.setColor(Color.WHITE);
 			/* When the chart reduces the camera viewport, the image can become
@@ -187,8 +205,8 @@ public class Overlay {
 				drawText(cvs, sb, vRect.right - clear, topLabelY, false, true);
 				if (!Float.isNaN(d.rangeMax)) {
 					int off = (int) paintTextOutline.measureText(sb, 0, sb.length());
-					lock.setBounds(vRect.right - clear - off - isize, vRect.top + iclear,
-							vRect.right - clear - off, vRect.top + iclear + isize);
+					lock.setBounds(vRect.right - clear - off - isize, topLockY,
+							vRect.right - clear - off, topLockY + isize);
 					lock.draw(cvs);
 				}
 				Util.formatTemp(sb, Float.isNaN(d.rangeMin) ? d.mmac.min : d.rangeMin, d.tempUnit);
@@ -210,8 +228,8 @@ public class Overlay {
 				drawText(cvs, sb, vRect.right + clear, topLabelY, true, true);
 				if (!Float.isNaN(d.rangeMax)) {
 					int off = (int) paintTextOutline.measureText(sb, 0, sb.length());
-					lock.setBounds(vRect.right + clear + off, vRect.top + iclear,
-							vRect.right + clear + off + isize, vRect.top + iclear + isize);
+					lock.setBounds(vRect.right + clear + off, topLockY,
+							vRect.right + clear + off + isize, topLockY + isize);
 					lock.draw(cvs);
 				}
 				Util.formatTemp(sb, Float.isNaN(d.rangeMin) ? d.mmac.min : d.rangeMin, d.tempUnit);

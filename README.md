@@ -16,6 +16,7 @@ A **fork** of fork of InfiCam from Netman that adds support for raw camera modes
   <img width="1193" height="992" alt="img" src="https://github.com/user-attachments/assets/1730f68c-1883-448c-8f01-0905b1404b35" />
   
 - Minor layout fixes when switching between portrait and landscape orientation.
+- Added the option to adjust the palette range by clicking on the gradient. 
 
 
 Downloads available at:
