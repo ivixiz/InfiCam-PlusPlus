@@ -200,7 +200,7 @@ public abstract class Settings extends LinearLayout {
 		private final int def;
 		private RadioGroup rg;
 		protected String[] items;
-		protected int current;
+		protected volatile int current;
 
 		boolean not_user = false; //to ignore setTo() not triggered by the user
 
@@ -208,6 +208,7 @@ public abstract class Settings extends LinearLayout {
 			super(name, res);
 			this.def = def; /* RadioGroup indexes from 1, wtf... Ah! Because our TextView xD. */
 			this.items = items;
+			current = def;
 		}
 
 		@Override
@@ -239,23 +240,21 @@ public abstract class Settings extends LinearLayout {
 
 		void setTo(int value) {
 			not_user = true;
-			boolean changed = false;
-			try {
-				RadioButton button = (RadioButton) rg.getChildAt(value + 1);
-				changed = !button.isChecked();
-				button.setChecked(true);
-				if(!changed) current = value;
-			} catch (Exception e) {
-				value = def;
+			if (value < 0 || value >= items.length) {
+				value = Math.max(0, Math.min(def, items.length - 1));
 				ed.putInt(name, value);
 				ed.commit();
-				RadioButton button = (RadioButton) rg.getChildAt(value + 1);
-				changed = !button.isChecked();
-				button.setChecked(true);
-				if(!changed) current = value;
 			}
+			RadioButton button = value < items.length ?
+					(RadioButton) rg.getChildAt(value + 1) : null;
+			boolean changed = button != null && !button.isChecked();
+			if (button != null)
+				button.setChecked(true);
+			if (!changed)
+				current = value;
 			not_user = false;
-			if(!changed) onSet(value);
+			if (!changed && button != null)
+				onSet(value);
 		}
 		@Override
 		void load() {
@@ -271,16 +270,7 @@ public abstract class Settings extends LinearLayout {
 		}
 
 		public int get() {
-			for (int i = 0 ; i < rg.getChildCount() ; i++){
-				try {
-					if(((RadioButton) rg.getChildAt(i + 1)).isChecked()){
-						return i;
-					}
-				} catch (Exception e) {
-					e.printStackTrace();
-				}
-			}
-			return -1;
+			return current;
 		}
 
 		public String[] getItems() {return items;}
@@ -428,7 +418,8 @@ public abstract class Settings extends LinearLayout {
 			TextView label = new TextView(getContext()); label.setText(res);
 			row.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 			input = new EditText(getContext());
-			input.setSingleLine(true); input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+			input.setSingleLine(true); input.setInputType(InputType.TYPE_CLASS_NUMBER |
+					InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
 			input.setSelectAllOnFocus(true);
 			row.addView(input, new LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT));
 			input.addTextChangedListener(new TextWatcher() {
@@ -460,7 +451,9 @@ public abstract class Settings extends LinearLayout {
 			set.addView(row);
 		}
 		private int dp(int value) { return (int)(value * getResources().getDisplayMetrics().density + .5f); }
-		private float clamp(float v) { return Math.max(min, Math.min(max, v)); }
+		private float clamp(float v) {
+			return Float.isFinite(v) ? Math.max(min, Math.min(max, v)) : def;
+		}
 		private void setTo(float v) { updating = true; input.setText(String.format(java.util.Locale.US, "%.6g", clamp(v))); input.setSelection(input.length()); updating = false; onSet(clamp(v)); }
 		@Override void load() { float v = sp.getFloat(name, def); v = clamp(v); ed.putFloat(name, v).commit(); setTo(v); }
 		@Override void setDefault() { ed.putFloat(name, def).commit(); load(); }

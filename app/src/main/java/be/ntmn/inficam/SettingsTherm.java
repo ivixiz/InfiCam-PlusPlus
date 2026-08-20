@@ -29,6 +29,7 @@ import java.util.Arrays;
  * But if libinficam calls us back with different settings due to a bug, this turns into an infinite loop.
  */
 public class SettingsTherm extends Settings {
+	private static final float[] FALLBACK_RANGE = { Util.ABSOLUTE_ZERO, Float.MAX_VALUE };
 
 	public float[][] thermal_ranges;
 	private boolean deferCameraUpdates = false;
@@ -59,9 +60,18 @@ public class SettingsTherm extends Settings {
 	}
 
 	public float[] getRange() {
-		assert(((SettingRadioDynamic)getSetting("range")).get() >= 0 &&
-				((SettingRadioDynamic)getSetting("range")).get() < thermal_ranges.length);
-		return thermal_ranges[((SettingRadioDynamic)getSetting("range")).get()];
+		float[][] ranges = thermal_ranges;
+		if (ranges == null || ranges.length == 0)
+			return FALLBACK_RANGE;
+		Setting rangeSetting = getSetting("range");
+		int selected = rangeSetting instanceof SettingRadioDynamic ?
+				((SettingRadioDynamic) rangeSetting).get() : 0;
+		if (selected < 0 || selected >= ranges.length || ranges[selected] == null ||
+				ranges[selected].length < 2)
+			selected = 0;
+		if (ranges[selected] == null || ranges[selected].length < 2)
+			return FALLBACK_RANGE;
+		return ranges[selected];
 	}
 
 	private boolean shouldApplyCameraUpdate() {

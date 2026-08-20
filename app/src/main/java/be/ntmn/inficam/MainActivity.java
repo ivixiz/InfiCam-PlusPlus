@@ -326,14 +326,17 @@ public class MainActivity extends BaseActivity {
 
 		@Override
 		public void surfaceChanged(@NonNull SurfaceHolder surfaceHolder, int i, int w, int h) {
-			outScreen.setSize(w, h);
+			if (outScreen != null)
+				outScreen.setSize(w, h);
 			overlayScreen.setSize(w, h);
 		}
 
 			@Override
 			public void surfaceDestroyed(@NonNull SurfaceHolder surfaceHolder) {
-				outScreen.release();
-				outScreen = null;
+				if (outScreen != null) {
+					outScreen.release();
+					outScreen = null;
+				}
 			}
 		};
 
@@ -401,7 +404,7 @@ public class MainActivity extends BaseActivity {
 					overlayData.mmac = latestMmac;
 					latestSensorMax = getCorrectedMaxTempClipping(fi.settings.max_temp_clipping);
 
-					if (!overTempLockoutActive &&
+					if (acceptCameraSettings && !overTempLockoutActive &&
 							!infiCam.isCalibrating() &&
 							!isNaN(latestMmac.max) && latestMmac.max > settingsTherm.getRange()[1] && //over max of the range
 							settings.overtempEnabled){ //setting enabled
@@ -901,17 +904,21 @@ public class MainActivity extends BaseActivity {
 			}
 		}
 
-		if (webViewServer != null && webViewServer.isRunning() && outWeb != null &&
+		if (webViewServer != null && webViewServer.wantsFrame() && outWeb != null &&
 				System.nanoTime() - lastWebCaptureNs >= WEB_FRAME_INTERVAL_NS) {
 			lastWebCaptureNs = System.nanoTime();
+			Bitmap webBitmap = null;
 			try {
 				overlayWeb.setSize(outWeb.width, outWeb.height);
 				drawFrame(outWeb, overlayWeb, false, data);
-				Bitmap webBitmap = outWeb.getBitmap();
-				webViewServer.publish(webBitmap);
-				webBitmap.recycle();
+				webBitmap = outWeb.getBitmap();
+				if (webViewServer.publish(webBitmap))
+					webBitmap = null; // The asynchronous encoder owns it now.
 			} catch (RuntimeException e) {
 				Log.w("inficam", "Web View frame failed", e);
+			} finally {
+				if (webBitmap != null)
+					webBitmap.recycle();
 			}
 		}
 
@@ -923,8 +930,7 @@ public class MainActivity extends BaseActivity {
 		if (outChartRecord != null && timeChart != null) {
 			Bitmap chart = timeChart.snapshot();
 			if (chart != null) {
-				outChartRecord.clear(1, 1, 1, 1);
-				outChartRecord.drawBitmap(chart, 0, 0, outChartRecord.width, outChartRecord.height);
+				drawChartVideoFrame(outChartRecord, chart);
 				chart.recycle();
 				outChartRecord.setPresentationTime(inputSurface.surfaceTexture.getTimestamp());
 				outChartRecord.swapBuffers();
@@ -932,6 +938,21 @@ public class MainActivity extends BaseActivity {
 		}
 
 		return timings;
+	}
+
+	/** Preserve the chart aspect ratio if the view changes size while recording. */
+	private void drawChartVideoFrame(SurfaceMuxer.OutputSurface output, Bitmap chart) {
+		output.clear(1, 1, 1, 1);
+		int sourceWidth = chart.getWidth();
+		int sourceHeight = chart.getHeight();
+		if (sourceWidth <= 0 || sourceHeight <= 0 || output.width <= 0 || output.height <= 0)
+			return;
+		float scale = Math.min(output.width / (float) sourceWidth,
+				output.height / (float) sourceHeight);
+		int width = Math.min(output.width, Math.max(1, Math.round(sourceWidth * scale)));
+		int height = Math.min(output.height, Math.max(1, Math.round(sourceHeight * scale)));
+		output.drawBitmap(chart, (output.width - width) / 2, (output.height - height) / 2,
+				width, height);
 	}
 
 	private Bitmap renderCapture(Overlay.Data data) {
@@ -1443,7 +1464,6 @@ public class MainActivity extends BaseActivity {
 		 *	 thus trigger another onResume().
 		 */
 		usbMonitor.start(this);
-		usbMonitor.scan();
 
 		imgCompressThread = new ImgCompressThread();
 		imgCompressThread.start();
@@ -1455,6 +1475,9 @@ public class MainActivity extends BaseActivity {
 		try {
 			surfaceMuxer.init();
 			renderingEnabled = true;
+			/* Reconnect only after every EGL surface has been restored. Starting the USB
+			 * connect thread from onStart() races with init() when returning from background. */
+			usbMonitor.scan();
 		} catch (RuntimeException e) {
 			renderingEnabled = false;
 			Log.e("inficam", "Unable to restore graphics context", e);
@@ -1535,7 +1558,7 @@ public class MainActivity extends BaseActivity {
 			 * Android can retain the previous zero height when the activity is resumed. */
 			buttonsLeftLayout = new ConstraintLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
 					ViewGroup.LayoutParams.WRAP_CONTENT);
-			buttonsRightLayout = new ConstraintLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+			buttonsRightLayout = new ConstraintLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
 					ViewGroup.LayoutParams.WRAP_CONTENT);
 			/* Both horizontal edges are constrained; 0dp lets ConstraintLayout resolve the
 			 * available width reliably after a reconnect/configuration change. */
@@ -1551,10 +1574,10 @@ public class MainActivity extends BaseActivity {
 			buttonsRightLayout.topToTop = ConstraintLayout.LayoutParams.UNSET;
 			buttonsRightLayout.bottomToBottom = R.id.mainLayout;
 			buttonsRightLayout.bottomToTop = ConstraintLayout.LayoutParams.UNSET;
-			buttonsRightLayout.leftToLeft = R.id.mainLayout;
-			buttonsRightLayout.rightToRight = R.id.mainLayout;
-			buttonsRightLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
-			buttonsRightLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
+			buttonsRightLayout.leftToLeft = ConstraintLayout.LayoutParams.UNSET;
+			buttonsRightLayout.rightToRight = ConstraintLayout.LayoutParams.UNSET;
+			buttonsRightLayout.startToStart = R.id.mainLayout;
+			buttonsRightLayout.endToEnd = R.id.mainLayout;
 			buttonsLeft.setLayoutParams(buttonsLeftLayout);
 			buttonsRight.setLayoutParams(buttonsRightLayout);
 			buttonsLeft.setLayoutParams(buttonsLeftLayout);
@@ -1774,9 +1797,13 @@ public class MainActivity extends BaseActivity {
 			outRecord.setSize(w, h);
 			overlayRecord.setSize(w, h);
 			if (exportChartSeparately && timeChartState != 0 && timeChart != null) {
-				Surface chartSurface = chartRecorder.start(this, w, h, false);
+				/* The separate still image is the chart view itself. Use that same aspect ratio
+				 * for video, with even dimensions required by common H.264 encoders. */
+				int chartWidth = evenVideoDimension(timeChart.getWidth(), w);
+				int chartHeight = evenVideoDimension(timeChart.getHeight(), h);
+				Surface chartSurface = chartRecorder.start(this, chartWidth, chartHeight, false);
 				outChartRecord = new SurfaceMuxer.OutputSurface(surfaceMuxer, chartSurface);
-				outChartRecord.setSize(w, h);
+				outChartRecord.setSize(chartWidth, chartHeight);
 			}
 			ImageButton buttonVideo = findViewById(R.id.buttonVideo);
 			buttonVideo.setColorFilter(Color.RED);
@@ -1784,6 +1811,11 @@ public class MainActivity extends BaseActivity {
 			e.printStackTrace();
 			messageView.showMessage(R.string.msg_failrecord);
 		}
+	}
+
+	private static int evenVideoDimension(int preferred, int fallback) {
+		int value = preferred > 1 ? preferred : fallback;
+		return Math.max(2, value & ~1);
 	}
 
 	private void stopRecording() {

@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** A small dependency-free MJPEG server for the current thermal view. */
 public final class WebViewServer {
@@ -29,14 +30,19 @@ public final class WebViewServer {
 	private static final int FIRST_PORT = 8080;
 	private static final int LAST_PORT = 8090;
 	private final Object frameLock = new Object();
+	private final Object encoderLock = new Object();
 	private final Set<Socket> clients = Collections.newSetFromMap(
 			new ConcurrentHashMap<Socket, Boolean>());
+	private final AtomicInteger streamClients = new AtomicInteger();
 	private volatile byte[] latestJpeg;
 	private volatile long frameNumber;
 	private volatile boolean running;
 	private volatile ServerSocket serverSocket;
 	private volatile int port;
 	private Thread acceptThread;
+	private Thread encoderThread;
+	private Bitmap pendingFrame;
+	private boolean encoderRunning;
 	private volatile CommandHandler commandHandler;
 	private volatile byte[] latestSnapshot;
 	private volatile String snapshotMime = "image/jpeg";
@@ -66,6 +72,10 @@ public final class WebViewServer {
 		if (serverSocket == null)
 			throw lastError == null ? new IOException("Unable to bind web server") : lastError;
 		running = true;
+		encoderRunning = true;
+		encoderThread = new Thread(this::encodeLoop, "InfiCam web encoder");
+		encoderThread.setDaemon(true);
+		encoderThread.start();
 		acceptThread = new Thread(this::acceptLoop, "InfiCam web server");
 		acceptThread.setDaemon(true);
 		acceptThread.start();
@@ -74,6 +84,14 @@ public final class WebViewServer {
 
 	public synchronized void stop() {
 		running = false;
+		synchronized (encoderLock) {
+			encoderRunning = false;
+			if (pendingFrame != null) {
+				pendingFrame.recycle();
+				pendingFrame = null;
+			}
+			encoderLock.notifyAll();
+		}
 		ServerSocket ss = serverSocket;
 		serverSocket = null;
 		if (ss != null) {
@@ -86,6 +104,12 @@ public final class WebViewServer {
 		synchronized (frameLock) {
 			frameLock.notifyAll();
 		}
+		Thread encoder = encoderThread;
+		encoderThread = null;
+		if (encoder != null && encoder != Thread.currentThread()) {
+			try { encoder.join(1000); }
+			catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+		}
 	}
 
 	public boolean isRunning() {
@@ -97,18 +121,60 @@ public final class WebViewServer {
 		return "http://" + (ip == null ? "127.0.0.1" : ip) + ":" + port;
 	}
 
-	/** Compresses a copy of the displayed frame; the resulting bytes are immutable. */
-	public void publish(Bitmap bitmap) {
-		if (!running || bitmap == null)
-			return;
-		ByteArrayOutputStream out = new ByteArrayOutputStream(64 * 1024);
-		if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 82, out))
-			return;
-		byte[] jpeg = out.toByteArray();
-		synchronized (frameLock) {
-			latestJpeg = jpeg;
-			frameNumber++;
-			frameLock.notifyAll();
+	/** True only when a browser is watching and the encoder can accept a new frame. */
+	public boolean wantsFrame() {
+		if (!running || streamClients.get() == 0)
+			return false;
+		synchronized (encoderLock) {
+			return encoderRunning && pendingFrame == null;
+		}
+	}
+
+	/**
+	 * Queues a displayed frame without blocking the render thread. Ownership of an accepted
+	 * bitmap is transferred to the server; rejected bitmaps remain owned by the caller.
+	 */
+	public boolean publish(Bitmap bitmap) {
+		if (bitmap == null)
+			return false;
+		synchronized (encoderLock) {
+			if (!running || !encoderRunning || streamClients.get() == 0 || pendingFrame != null)
+				return false;
+			pendingFrame = bitmap;
+			encoderLock.notifyAll();
+			return true;
+		}
+	}
+
+	private void encodeLoop() {
+		while (true) {
+			Bitmap bitmap;
+			synchronized (encoderLock) {
+				while (encoderRunning && pendingFrame == null) {
+					try { encoderLock.wait(); }
+					catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+						return;
+					}
+				}
+				if (!encoderRunning)
+					return;
+				bitmap = pendingFrame;
+				pendingFrame = null;
+			}
+			try {
+				ByteArrayOutputStream out = new ByteArrayOutputStream(64 * 1024);
+				if (bitmap.compress(Bitmap.CompressFormat.JPEG, 82, out)) {
+					byte[] jpeg = out.toByteArray();
+					synchronized (frameLock) {
+						latestJpeg = jpeg;
+						frameNumber++;
+						frameLock.notifyAll();
+					}
+				}
+			} finally {
+				bitmap.recycle();
+			}
 		}
 	}
 
@@ -294,33 +360,38 @@ public final class WebViewServer {
 	}
 
 	private void serveStream(Socket socket) throws IOException {
-		socket.setSoTimeout(0);
-		OutputStream out = socket.getOutputStream();
-		String headers = "HTTP/1.1 200 OK\r\n" +
-				"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n" +
-				"Cache-Control: no-cache, no-store, must-revalidate\r\n" +
-				"Connection: close\r\n\r\n";
-		out.write(headers.getBytes(StandardCharsets.US_ASCII));
-		out.flush();
-		long sentFrame = -1;
-		while (running && !socket.isClosed()) {
-			byte[] jpeg;
-			synchronized (frameLock) {
-				while (running && frameNumber == sentFrame)
-					try { frameLock.wait(1000); } catch (InterruptedException e) {
-						Thread.currentThread().interrupt();
-						return;
-					}
-				jpeg = latestJpeg;
-				sentFrame = frameNumber;
-			}
-			if (jpeg == null)
-				continue;
-			out.write(("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
-					jpeg.length + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
-			out.write(jpeg);
-			out.write("\r\n".getBytes(StandardCharsets.US_ASCII));
+		streamClients.incrementAndGet();
+		try {
+			socket.setSoTimeout(0);
+			OutputStream out = socket.getOutputStream();
+			String headers = "HTTP/1.1 200 OK\r\n" +
+					"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n" +
+					"Cache-Control: no-cache, no-store, must-revalidate\r\n" +
+					"Connection: close\r\n\r\n";
+			out.write(headers.getBytes(StandardCharsets.US_ASCII));
 			out.flush();
+			long sentFrame = -1;
+			while (running && !socket.isClosed()) {
+				byte[] jpeg;
+				synchronized (frameLock) {
+					while (running && frameNumber == sentFrame)
+						try { frameLock.wait(1000); } catch (InterruptedException e) {
+							Thread.currentThread().interrupt();
+							return;
+						}
+					jpeg = latestJpeg;
+					sentFrame = frameNumber;
+				}
+				if (jpeg == null)
+					continue;
+				out.write(("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
+						jpeg.length + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+				out.write(jpeg);
+				out.write("\r\n".getBytes(StandardCharsets.US_ASCII));
+				out.flush();
+			}
+		} finally {
+			streamClients.decrementAndGet();
 		}
 	}
 
