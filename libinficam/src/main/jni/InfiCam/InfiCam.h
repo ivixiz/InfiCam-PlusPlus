@@ -37,6 +37,14 @@ class InfiCam {
 
 	static const int CMD_RANGE_120 = 0x8020;
 	static const int CMD_RANGE_400 = 0x8021;
+	/* P2 Pro IRCMD protocol (SDK_USB_IR 1.2.4): TPD_PROP_GAIN_SEL
+	 * selects high gain (normal-temperature range) or low gain
+	 * (high-temperature range). */
+	static const uint16_t P2_CMD_PROP_TPD_PARAMS = 0x8514;
+	static const uint16_t P2_CMD_SET = 0x4000;
+	static const uint16_t P2_TPD_PROP_GAIN_SEL = 5;
+	static const uint16_t P2_GAIN_LOW = 0;
+	static const uint16_t P2_GAIN_HIGH = 1;
 
 	static const int CMD_STORE = 0x80FF;
 	static const int ADDR_CORRECTION = 0;
@@ -109,6 +117,10 @@ private:
 	void refresh_auto_shut_interval();
 	void start_raw_frame_validation();
 	void set_raw_validation_shutter(bool closed);
+	bool p2pro_long_command(uint16_t command, uint16_t parameter, uint32_t value,
+							uint32_t extra, uint32_t response_size, uint16_t *response);
+	bool p2pro_get_gain(uint16_t &gain);
+	bool p2pro_set_gain(uint16_t gain);
 
 public:
 	InfiCam(const void * inficam_jni);

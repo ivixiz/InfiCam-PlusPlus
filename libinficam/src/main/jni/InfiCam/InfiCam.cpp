@@ -18,6 +18,20 @@ static constexpr int RAW_RANGE_VALIDATION_MAX_RETRIES = 3;
 static constexpr float RAW_RANGE_MIN_VALID_VARIANCE = 0.001f;
 static constexpr float RAW_RANGE_VARIANCE_DELTA_ABS = 0.025f; // 0.05C stddev squared delta
 static constexpr float RAW_RANGE_VARIANCE_DELTA_REL = 0.025f;
+static constexpr unsigned int P2_COMMAND_TIMEOUT_MS = 1000;
+static constexpr int P2_COMMAND_STATUS_RETRIES = 1000;
+
+static void write_be16(uint8_t *dst, const uint16_t value){
+	dst[0] = (uint8_t)(value >> 8);
+	dst[1] = (uint8_t)value;
+}
+
+static void write_be32(uint8_t *dst, const uint32_t value){
+	dst[0] = (uint8_t)(value >> 24);
+	dst[1] = (uint8_t)(value >> 16);
+	dst[2] = (uint8_t)(value >> 8);
+	dst[3] = (uint8_t)value;
+}
 
 static float temperature_variance(const float *temp, const int count, int &valid_count){
 	double mean = 0.0;
@@ -738,6 +752,93 @@ std::vector<std::array<float,2>> InfiCam::get_ranges(){
 }
 
 
+/* P2 Pro long-command transport, matched against SDK_USB_IR 1.2.4's
+ * LibIRCMD set/get_prop_tpd_params implementation. A command is split into
+ * two vendor control transfers and followed by the SDK status poll. */
+bool InfiCam::p2pro_long_command(const uint16_t command, const uint16_t parameter,
+								 const uint32_t value, const uint32_t extra,
+								 const uint32_t response_size, uint16_t *response) {
+	libusb_device_handle *handle = dev.get_libusb_handle();
+	if(handle == nullptr){
+		LOGE("P2 Pro command attempted without a USB handle.\n");
+		return false;
+	}
+
+	uint8_t first[8]{};
+	uint8_t second[8]{};
+	/* The command word is little-endian; all parameters are big-endian. */
+	first[0] = (uint8_t)command;
+	first[1] = (uint8_t)(command >> 8);
+	write_be16(first + 2, parameter);
+	write_be32(first + 4, value);
+	write_be32(second, extra);
+	write_be32(second + 4, response_size);
+
+	int result = libusb_control_transfer(handle, 0x41, 0x45, 0x78, 0x9d00,
+										 first, sizeof(first), P2_COMMAND_TIMEOUT_MS);
+	if(result != (int)sizeof(first)){
+		LOGE("P2 Pro command header transfer failed: %d.\n", result);
+		return false;
+	}
+	result = libusb_control_transfer(handle, 0x41, 0x45, 0x78, 0x1d08,
+									 second, sizeof(second), P2_COMMAND_TIMEOUT_MS);
+	if(result != (int)sizeof(second)){
+		LOGE("P2 Pro command payload transfer failed: %d.\n", result);
+		return false;
+	}
+
+	bool ready = false;
+	for(int attempt = 0; attempt < P2_COMMAND_STATUS_RETRIES; attempt++){
+		uint8_t status = 0xff;
+		result = libusb_control_transfer(handle, 0xc1, 0x44, 0x78, 0x0200,
+										 &status, 1, P2_COMMAND_TIMEOUT_MS);
+		if(result != 1){
+			LOGE("P2 Pro command status transfer failed: %d.\n", result);
+			return false;
+		}
+		/* This is the same state test used by the official SDK: bit 0 or
+		 * status 2 means busy, while bit 1 together with higher bits is an
+		 * error response. */
+		if((status & 0x01) != 0 || ((status & 0x02) != 0 && (status & 0xfc) == 0)){
+			Utils::sleep(1);
+			continue;
+		}
+		if((status & 0x02) != 0){
+			LOGE("P2 Pro command failed with status 0x%02x.\n", status);
+			return false;
+		}
+		ready = true;
+		break;
+	}
+	if(!ready){
+		LOGE("P2 Pro command timed out waiting for completion.\n");
+		return false;
+	}
+
+	if(response != nullptr){
+		uint8_t data[2]{};
+		result = libusb_control_transfer(handle, 0xc1, 0x44, 0x78, 0x1d10,
+										 data, sizeof(data), P2_COMMAND_TIMEOUT_MS);
+		if(result != (int)sizeof(data)){
+			LOGE("P2 Pro command response transfer failed: %d.\n", result);
+			return false;
+		}
+		*response = (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
+	}
+	return true;
+}
+
+bool InfiCam::p2pro_get_gain(uint16_t &gain) {
+	return p2pro_long_command(P2_CMD_PROP_TPD_PARAMS, P2_TPD_PROP_GAIN_SEL,
+								0, 0, sizeof(uint16_t), &gain);
+}
+
+bool InfiCam::p2pro_set_gain(const uint16_t gain) {
+	return p2pro_long_command(P2_CMD_PROP_TPD_PARAMS | P2_CMD_SET,
+								P2_TPD_PROP_GAIN_SEL, gain, 0, 0, nullptr);
+}
+
+
 void InfiCam::set_range(const int range) {
 	if(!is_ready) { return; }
 	if(range < 0 || range > 1){
@@ -747,12 +848,36 @@ void InfiCam::set_range(const int range) {
 
 	const auto requested_range = (CameraTemperatureRange)range;
 	LOGD("set_range %d (cur %d)\n", range, (int)cam_settings.temperature_range);
-	if((cam_settings.use_raw_logic || is_p2_pro) && requested_range == cam_settings.temperature_range){
+	if(cam_settings.use_raw_logic && requested_range == cam_settings.temperature_range){
 		LOGD("Ignoring.\n");
 		return;
 	}
 
-	if(!is_p2_pro){
+	if(is_p2_pro){
+		const uint16_t requested_gain =
+				requested_range == CameraTemperatureRange::RANGE_120_400 ?
+				P2_GAIN_LOW : P2_GAIN_HIGH;
+		uint16_t current_gain = UINT16_MAX;
+		bool success;
+		pthread_mutex_lock(&command_mutex);
+		if(p2pro_get_gain(current_gain) && current_gain == requested_gain){
+			success = true;
+			LOGI("P2 Pro gain already set to %u.\n", current_gain);
+		} else {
+			success = p2pro_set_gain(requested_gain) &&
+					  p2pro_get_gain(current_gain) && current_gain == requested_gain;
+		}
+		pthread_mutex_unlock(&command_mutex);
+		if(!success){
+			LOGE("P2 Pro gain switch failed: requested=%u readback=%u.\n",
+				 requested_gain, current_gain);
+			return;
+		}
+		LOGI("P2 Pro gain confirmed: %u (%s-temperature range).\n",
+			 current_gain, current_gain == P2_GAIN_LOW ? "high" : "normal");
+		cam_settings.max_temperature_clipping =
+				requested_gain == P2_GAIN_LOW ? 600.0f : 150.0f;
+	} else {
 		pthread_mutex_lock(&command_mutex);
 		dev.set_zoom_abs((requested_range == CameraTemperatureRange::RANGE_120_400) ? CMD_RANGE_400 : CMD_RANGE_120);
 		pthread_mutex_unlock(&command_mutex);
