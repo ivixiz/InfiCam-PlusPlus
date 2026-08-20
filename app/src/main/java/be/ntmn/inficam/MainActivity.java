@@ -1050,7 +1050,7 @@ public class MainActivity extends BaseActivity {
 				calibrate(false);
 			} else if ("record_start".equals(command)) {
 				if (usbConnection != null && !recorder.isRecording())
-					startRecording(false);
+					startRecording(false, true);
 			} else if ("record_stop".equals(command)) {
 				if (recorder.isRecording())
 					stopRecording();
@@ -1790,19 +1790,27 @@ public class MainActivity extends BaseActivity {
 	}
 
 	private void startRecording(boolean recordAudio) {
+		startRecording(recordAudio, false);
+	}
+
+	/** Web exports use the thermal sensor's native image size; CSS handles browser scaling. */
+	private void startRecording(boolean recordAudio, boolean nativeCameraResolution) {
 		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
 			askPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE, granted -> {
 				if (!granted)
 					messageView.showMessage(R.string.msg_permdenied_storage);
-				else _startRecording(recordAudio);
+				else _startRecording(recordAudio, nativeCameraResolution);
 			});
-		} else _startRecording(recordAudio);
+		} else _startRecording(recordAudio, nativeCameraResolution);
 	}
 
 	/* Request audio permission first when necessary! */
-	private void _startRecording(boolean recordAudio) {
+	private void _startRecording(boolean recordAudio, boolean nativeCameraResolution) {
 		try {
-			int w = vidWidth, h = vidHeight;
+			int w = nativeCameraResolution ? infiCam.getWidth() : vidWidth;
+			int h = nativeCameraResolution ? infiCam.getHeight() : vidHeight;
+			if (w <= 0 || h <= 0)
+				throw new IOException("Camera frame size is not available");
 			if (orientation == Surface.ROTATION_0 || orientation == Surface.ROTATION_180) {
 				h ^= w;
 				w ^= h;

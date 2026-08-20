@@ -66,10 +66,10 @@
     <div id="chart-wrap"><canvas id="chart"></canvas></div>
   </div>
   <div id="controls">
-    <button onclick="command('palette')">Palette</button>
-    <button onclick="command('mode')">Mode</button>
-    <button onclick="command('mirror')">Mirror</button>
-    <button onclick="command('calibrate')">Calibrate</button>
+    <button type="button" onclick="sendCommand('palette')">Palette</button>
+    <button type="button" onclick="sendCommand('mode')">Mode</button>
+    <button type="button" onclick="sendCommand('mirror')">Mirror</button>
+    <button type="button" onclick="sendCommand('calibrate')">Calibrate</button>
     <button onclick="savePicture()">Save Picture</button>
     <button id="record" onclick="toggleRecording()">Record Video</button>
   </div>
@@ -94,7 +94,7 @@
     let savingVideo = false;
     let recordingExport = null;
 
-    function command(name) {
+    function sendCommand(name) {
       return fetch('/control?cmd=' + encodeURIComponent(name), { cache: 'no-store' });
     }
 
@@ -399,14 +399,14 @@
           chart: meta.state !== 0
         };
         recordButton.textContent = 'Stop Recording';
-        await command('record_start');
+        await sendCommand('record_start');
         return;
       }
       savingVideo = true;
       recordButton.disabled = true;
       recordButton.textContent = 'Saving MP4...';
       statusLabel.textContent = '';
-      await command('record_stop');
+      await sendCommand('record_stop');
       try {
         if (!await waitForVideo('/video')) throw new Error('Video export timed out');
         const name = 'inficam_' + stamp();
