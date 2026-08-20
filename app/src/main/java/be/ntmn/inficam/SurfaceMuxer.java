@@ -328,6 +328,11 @@ public class SurfaceMuxer {
 			if (bitmap == null || muxer.eglContext == EGL14.EGL_NO_CONTEXT || w <= 0 || h <= 0)
 				return;
 			makeCurrent();
+			/* The GL viewport is global context state, not EGL-surface state. The main
+			 * portrait recorder leaves its 1080x1920 viewport active; reusing it for a
+			 * 1080x700 chart surface crops and vertically stretches the chart even when
+			 * the bitmap/output aspect ratios are correct. */
+			GLES20.glViewport(0, 0, width, height);
 			if (muxer.bitmapTexture == 0) {
 				int[] texture = new int[1];
 				GLES20.glGenTextures(1, texture, 0);
