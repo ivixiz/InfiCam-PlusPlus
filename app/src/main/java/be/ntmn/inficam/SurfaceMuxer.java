@@ -2,7 +2,6 @@ package be.ntmn.inficam;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.Matrix;
 import android.graphics.SurfaceTexture;
 import android.opengl.GLUtils;
 import android.opengl.EGL14;
@@ -235,6 +234,8 @@ public class SurfaceMuxer {
 		private Surface surface;
 		private boolean surfaceOwned;
 		private EGLSurface eglSurface = EGL14.EGL_NO_SURFACE;
+		private ByteBuffer readBuffer;
+		private ByteBuffer flippedReadBuffer;
 		public int width, height;
 
 		public OutputSurface(SurfaceMuxer muxer, Surface surf, boolean release, int w, int h) {
@@ -369,6 +370,8 @@ public class SurfaceMuxer {
 				muxer = null;
 				surface = null;
 			}
+			readBuffer = null;
+			flippedReadBuffer = null;
 		}
 
 		public void clear(float r, float g, float b, float a) {
@@ -379,19 +382,44 @@ public class SurfaceMuxer {
 			GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
 		}
 
-		public Bitmap getBitmap() {
-			Bitmap bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-			ByteBuffer buf = ByteBuffer.allocateDirect(width * height * 4);
+		public Bitmap getBitmap() { return getBitmap(null); }
+
+		/** Read the pbuffer into a reusable bitmap without per-frame intermediate bitmaps/buffers. */
+		public Bitmap getBitmap(Bitmap reusable) {
+			int byteCount = width * height * 4;
+			if (readBuffer == null || readBuffer.capacity() != byteCount) {
+				readBuffer = ByteBuffer.allocateDirect(byteCount).order(ByteOrder.nativeOrder());
+				flippedReadBuffer = ByteBuffer.allocateDirect(byteCount)
+						.order(ByteOrder.nativeOrder());
+			}
+			Bitmap result = reusable;
+			if (result == null || result.isRecycled() || result.getWidth() != width ||
+					result.getHeight() != height) {
+				if (result != null && !result.isRecycled())
+					result.recycle();
+				result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+			}
 			makeCurrent();
 			GLES20.glFlush();
 			GLES20.glFinish();
-			GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf);
-			bmp.copyPixelsFromBuffer(buf);
-			Matrix matrix = new Matrix();
-			matrix.setScale(1, -1);
-			Bitmap ret = Bitmap.createBitmap(bmp, 0, 0, width, height, matrix, false);
-			bmp.recycle();
-			return ret;
+			readBuffer.clear();
+			GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA,
+					GLES20.GL_UNSIGNED_BYTE, readBuffer);
+			/* OpenGL rows start at the bottom. Copy whole rows into the reusable
+			 * destination buffer in reverse order; this avoids allocating and rotating
+			 * a second Bitmap for every WebViewer frame. */
+			flippedReadBuffer.clear();
+			ByteBuffer row = readBuffer.duplicate();
+			int rowBytes = width * 4;
+			for (int y = height - 1; y >= 0; --y) {
+				row.clear();
+				row.position(y * rowBytes);
+				row.limit((y + 1) * rowBytes);
+				flippedReadBuffer.put(row);
+			}
+			flippedReadBuffer.flip();
+			result.copyPixelsFromBuffer(flippedReadBuffer);
+			return result;
 		}
 	}
 

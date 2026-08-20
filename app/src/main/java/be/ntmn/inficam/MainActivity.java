@@ -25,6 +25,7 @@ import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.ScaleGestureDetector;
@@ -44,7 +45,6 @@ import androidx.annotation.NonNull;
 import androidx.constraintlayout.widget.ConstraintLayout;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.List;
@@ -85,6 +85,7 @@ public class MainActivity extends BaseActivity {
 	private final SurfaceRecorder chartRecorder = new SurfaceRecorder();
 	private SurfaceMuxer.OutputSurface outChartRecord;
 	private boolean recordAudio;
+	private boolean recordChartSeparately;
 	private final Rect rect = new Rect(); /* To use during frames, to avoid allocating it there. */
 
 	private CameraView cameraView;
@@ -101,7 +102,7 @@ public class MainActivity extends BaseActivity {
 	private FrameLayout cameraContainer;
 	private ImageButton buttonPhoto, buttonShare, buttonWebView, buttonTimeChart;
 	private TimeChartView timeChart;
-	private int timeChartState = 0; // 0 hidden, 1 recording, 2 stopped/visible
+	private volatile int timeChartState = 0; // 0 hidden, 1 recording, 2 stopped/visible
 	private static final int TIME_CHART_HEIGHT_DP = 300;
 	private static final int TIME_CHART_BOTTOM_GAP_DP = 9;
 	private static final int TIME_CHART_BUTTON_RESERVE_DP = 72;
@@ -123,8 +124,8 @@ public class MainActivity extends BaseActivity {
 	private volatile boolean overTempLockoutActive = false;
 	private int calibrationMessageStep = 0;
 	private float scale = 1.0f;
-	private int imgType;
-	private int imgQuality;
+	private volatile int imgType;
+	private volatile int imgQuality;
 	private float[] latestTempBuffer = new float[0];
 	private float[] renderTempBuffer = new float[0];
 	private final InfiCam.FrameInfo latestFrameInfo = new InfiCam.FrameInfo();
@@ -165,7 +166,7 @@ public class MainActivity extends BaseActivity {
 	private Bitmap imgCompressBitmap;
 	private Bitmap imgCompressChartBitmap;
 	private float chartSampleRateSeconds = 0.1f;
-	private boolean exportChartSeparately;
+	private volatile boolean exportChartSeparately;
 	private float paletteManualMin = 0.0f;
 	private float paletteManualMax = 100.0f;
 
@@ -178,25 +179,27 @@ public class MainActivity extends BaseActivity {
 		public void run() {
 			lock.lock();
 			while (true) {
-				try {
-					cond.await();
-				} catch (Exception e) {
-					e.printStackTrace();
-					continue;
+				while (!stop && imgCompressBitmap == null) {
+					try {
+						cond.await();
+					} catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+						stop = true;
+					}
 				}
-				if (stop)
+				if (stop) {
+					recyclePendingBitmaps();
 					break;
+				}
 				try {
 					Util.writeImage(getApplicationContext(), imgCompressBitmap, imgType,
 							imgQuality);
-					imgCompressBitmap.recycle();
-					if (imgCompressChartBitmap != null) {
+					if (imgCompressChartBitmap != null)
 						Util.writeImage(getApplicationContext(), imgCompressChartBitmap, imgType, imgQuality);
-						imgCompressChartBitmap.recycle();
-						imgCompressChartBitmap = null;
-					}
 				} catch (Exception e) {
 					handler.post(() -> messageView.showMessage(e.getMessage()));
+				} finally {
+					recyclePendingBitmaps();
 				}
 				handler.postDelayed(() -> {
 					buttonPhoto.setEnabled(true);
@@ -204,6 +207,15 @@ public class MainActivity extends BaseActivity {
 				},200); //keep button visibly activated for a short time, or you can't see it.
 			}
 			lock.unlock();
+		}
+
+		private void recyclePendingBitmaps() {
+			if (imgCompressBitmap != null && !imgCompressBitmap.isRecycled())
+				imgCompressBitmap.recycle();
+			if (imgCompressChartBitmap != null && !imgCompressChartBitmap.isRecycled())
+				imgCompressChartBitmap.recycle();
+			imgCompressBitmap = null;
+			imgCompressChartBitmap = null;
 		}
 
 		public void shutdown() {
@@ -911,7 +923,8 @@ public class MainActivity extends BaseActivity {
 			try {
 				overlayWeb.setSize(outWeb.width, outWeb.height);
 				drawFrame(outWeb, overlayWeb, false, data);
-				webBitmap = outWeb.getBitmap();
+				webBitmap = webViewServer.acquireFrame(outWeb.width, outWeb.height);
+				webBitmap = outWeb.getBitmap(webBitmap);
 				if (webViewServer.publish(webBitmap))
 					webBitmap = null; // The asynchronous encoder owns it now.
 			} catch (RuntimeException e) {
@@ -926,7 +939,7 @@ public class MainActivity extends BaseActivity {
 			timings.screenSwapNs = drawFrame(outScreen, overlayScreen, true, data);
 		if (outRecord != null)
 			timings.recordSwapNs = drawFrame(outRecord, overlayRecord, true, data,
-				!exportChartSeparately);
+				!recordChartSeparately);
 		if (outChartRecord != null && timeChart != null) {
 			Bitmap chart = timeChart.snapshot();
 			if (chart != null) {
@@ -1011,7 +1024,6 @@ public class MainActivity extends BaseActivity {
 			return;
 		}
 		try {
-			webViewServer.setSnapshotFormat(imgType, imgQuality);
 			String url = webViewServer.start();
 			webViewAddress.setText(url);
 			webViewAddress.setVisibility(View.VISIBLE);
@@ -1040,32 +1052,23 @@ public class MainActivity extends BaseActivity {
 				if (usbConnection != null && !recorder.isRecording())
 					startRecording(false);
 			} else if ("record_stop".equals(command)) {
-				if (recorder.isRecording()) {
+				if (recorder.isRecording())
 					stopRecording();
-					publishLastWebVideo();
-				}
 			}
 		});
 	}
 
-	private void publishLastWebVideo() {
-		Uri uri = recorder.getLastFileUri();
-		if (uri == null || webViewServer == null)
-			return;
-		new Thread(() -> {
-			try (InputStream in = getContentResolver().openInputStream(uri)) {
-				if (in == null)
-					return;
-				java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-				byte[] buffer = new byte[64 * 1024];
-				int count;
-				while ((count = in.read(buffer)) != -1)
-					out.write(buffer, 0, count);
-				webViewServer.publishVideo(out.toByteArray());
-			} catch (IOException e) {
-				Log.w("inficam", "Unable to prepare Web Control MP4", e);
-			}
-		}, "InfiCam web video").start();
+	/** Open the completed recording directly from MediaStore so large MP4 files are streamed. */
+	private WebViewServer.VideoData openWebVideo(boolean chart) throws IOException {
+		Uri uri = chart ? chartRecorder.getLastFileUri() : recorder.getLastFileUri();
+		if (uri == null)
+			return null;
+		ParcelFileDescriptor descriptor = getContentResolver().openFileDescriptor(uri, "r");
+		if (descriptor == null)
+			return null;
+		long length = descriptor.getStatSize();
+		return new WebViewServer.VideoData(
+				new ParcelFileDescriptor.AutoCloseInputStream(descriptor), length);
 	}
 
 	private void toggleTimeChart() {
@@ -1223,8 +1226,21 @@ public class MainActivity extends BaseActivity {
 		overlayWeb = new Overlay(this,
 				new SurfaceMuxer.InputSurface(surfaceMuxer));
 		outWeb = new SurfaceMuxer.OutputSurface(surfaceMuxer, null, 640, 480);
-		webViewServer = new WebViewServer();
+		webViewServer = new WebViewServer(this);
 		webViewServer.setCommandHandler(this::handleWebCommand);
+		webViewServer.setStateProvider((generation, from) -> {
+			TimeChartView chart = timeChart;
+			if (chart == null)
+				return "{\"state\":0,\"recording\":false,\"videoRecording\":false," +
+						"\"generation\":0,\"reset\":true,\"from\":0,\"count\":0," +
+						"\"intervalNs\":100000000,\"unit\":0,\"showMax\":false," +
+						"\"showMin\":false,\"showCenter\":false,\"exportSeparately\":false," +
+						"\"imageType\":2,\"imageQuality\":92,\"max\":[],\"min\":[]," +
+						"\"center\":[]}";
+			return chart.getWebStateJson(timeChartState, generation, from,
+					exportChartSeparately, imgType, imgQuality, recorder.isRecording());
+		});
+		webViewServer.setVideoProvider(this::openWebVideo);
 
 		/* We use it later. */
 		videoSurface = new SurfaceMuxer.InputSurface(surfaceMuxer);
@@ -1796,7 +1812,10 @@ public class MainActivity extends BaseActivity {
 			outRecord = new SurfaceMuxer.OutputSurface(surfaceMuxer, rsurface);
 			outRecord.setSize(w, h);
 			overlayRecord.setSize(w, h);
-			if (exportChartSeparately && timeChartState != 0 && timeChart != null) {
+			recordChartSeparately = exportChartSeparately && timeChartState != 0 &&
+					timeChart != null;
+			chartRecorder.clearLastFileUri();
+			if (recordChartSeparately) {
 				/* The separate still image is the chart view itself. Use that same aspect ratio
 				 * for video, with even dimensions required by common H.264 encoders. */
 				int chartWidth = evenVideoDimension(timeChart.getWidth(), w);
@@ -1809,6 +1828,7 @@ public class MainActivity extends BaseActivity {
 			buttonVideo.setColorFilter(Color.RED);
 		} catch (IOException e) {
 			e.printStackTrace();
+			stopRecording();
 			messageView.showMessage(R.string.msg_failrecord);
 		}
 	}
@@ -1831,6 +1851,7 @@ public class MainActivity extends BaseActivity {
 			outChartRecord.release();
 			outChartRecord = null;
 		}
+		recordChartSeparately = false;
 	}
 
 	public void updateBatLevel(Intent batteryStatus) {

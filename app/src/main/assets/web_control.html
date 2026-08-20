@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>InfiCam Web Control</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #111;
+      color: #eee;
+      text-align: center;
+      font-family: sans-serif;
+    }
+    h3 { margin: 10px 0 8px; }
+    #viewer {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      align-items: stretch;
+      width: min(98vw, 1600px);
+      margin: 0 auto;
+      background: #000;
+    }
+    #viewer.chart-on {
+      grid-template-columns: minmax(0, 62fr) minmax(320px, 38fr);
+    }
+    #live {
+      display: block;
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      max-height: calc(100vh - 110px);
+      object-fit: contain;
+      background: #000;
+    }
+    #chart-wrap {
+      display: none;
+      min-width: 0;
+      min-height: 420px;
+      background: #fff;
+    }
+    #viewer.chart-on #chart-wrap { display: block; }
+    #chart { display: block; width: 100%; height: 100%; }
+    #controls {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 6px;
+      justify-content: center;
+      align-items: center;
+      padding: 8px;
+      overflow-x: auto;
+    }
+    button { white-space: nowrap; padding: 5px 10px; }
+    #status { min-height: 1.2em; margin-bottom: 5px; color: #bbb; font-size: 13px; }
+    @media (max-width: 760px) {
+      #viewer.chart-on { grid-template-columns: minmax(0, 1fr); }
+      #chart-wrap { min-height: 360px; }
+    }
+  </style>
+</head>
+<body>
+  <h3>InfiCam Web Control</h3>
+  <div id="viewer">
+    <img id="live" src="/stream" alt="Thermal camera stream">
+    <div id="chart-wrap"><canvas id="chart"></canvas></div>
+  </div>
+  <div id="controls">
+    <button onclick="command('palette')">Palette</button>
+    <button onclick="command('mode')">Mode</button>
+    <button onclick="command('mirror')">Mirror</button>
+    <button onclick="command('calibrate')">Calibrate</button>
+    <button onclick="savePicture()">Save Picture</button>
+    <button id="record" onclick="toggleRecording()">Record Video</button>
+  </div>
+  <div id="status"></div>
+  <script>
+    'use strict';
+
+    const viewer = document.getElementById('viewer');
+    const live = document.getElementById('live');
+    const chart = document.getElementById('chart');
+    const chartWrap = document.getElementById('chart-wrap');
+    const recordButton = document.getElementById('record');
+    const statusLabel = document.getElementById('status');
+    const data = { generation: -1, max: [], min: [], center: [] };
+    let meta = {
+      state: 0, intervalNs: 100000000, unit: 0,
+      showMax: false, showMin: false, showCenter: false,
+      exportSeparately: false, imageType: 2, imageQuality: 92,
+      videoRecording: false
+    };
+    let drawPending = false;
+    let savingVideo = false;
+    let recordingExport = null;
+
+    function command(name) {
+      return fetch('/control?cmd=' + encodeURIComponent(name), { cache: 'no-store' });
+    }
+
+    function requestDraw() {
+      if (drawPending) return;
+      drawPending = true;
+      requestAnimationFrame(() => { drawPending = false; drawChart(); });
+    }
+
+    async function pollState() {
+      try {
+        const url = '/state?generation=' + data.generation + '&from=' + data.max.length;
+        const update = await fetch(url, { cache: 'no-store' }).then(response => response.json());
+        if (update.reset || update.from !== data.max.length) {
+          data.max = [];
+          data.min = [];
+          data.center = [];
+        }
+        data.generation = update.generation;
+        data.max.push(...update.max);
+        data.min.push(...update.min);
+        data.center.push(...update.center);
+        meta = update;
+        viewer.classList.toggle('chart-on', update.state !== 0);
+        if (!savingVideo) {
+          recordButton.textContent = update.videoRecording ? 'Stop Recording' : 'Record Video';
+          recordButton.disabled = false;
+        }
+        requestDraw();
+      } catch (error) {
+        statusLabel.textContent = 'Waiting for phone state...';
+      } finally {
+        setTimeout(pollState, 250);
+      }
+    }
+
+    function niceStep(raw) {
+      const power = Math.pow(10, Math.floor(Math.log10(raw)));
+      const normalized = raw / power;
+      return (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * power;
+    }
+
+    function formatDuration(ns, totalNs) {
+      const seconds = Math.floor(ns / 1e9);
+      if (totalNs < 300e9) return seconds + 's';
+      if (seconds < 60) return seconds + 's';
+      if (seconds < 3600) {
+        const remainder = seconds % 60;
+        return Math.floor(seconds / 60) + 'm' + (remainder === 0 ? '' : remainder + 's');
+      }
+      const minutes = Math.floor((seconds % 3600) / 60);
+      return Math.floor(seconds / 3600) + 'h' + (minutes === 0 ? '' : minutes + 'm');
+    }
+
+    function timeStep(duration, plotWidth, context) {
+      let step;
+      if (duration <= 20e9) step = 1e9;
+      else if (duration <= 120e9) step = 5e9;
+      else if (duration <= 600e9) step = 10e9;
+      else if (duration <= 3600e9) step = 60e9;
+      else if (duration <= 21600e9) step = 3600e9;
+      else if (duration <= 43200e9) step = 7200e9;
+      else step = 21600e9;
+      for (const multiplier of [1, 2, 5, 10]) {
+        const candidate = step * multiplier;
+        const pixelStep = candidate / Math.max(1, duration) * plotWidth;
+        let labelWidth = 0;
+        for (let value = 0; value <= duration; value += candidate)
+          labelWidth = Math.max(labelWidth, context.measureText(formatDuration(value, duration)).width);
+        if (pixelStep >= Math.max(28, labelWidth + 8)) return candidate;
+      }
+      return step * 10;
+    }
+
+    function drawSeries(context, values, enabled, color, lo, hi, left, right, top, bottom) {
+      if (!enabled || values.length === 0) return;
+      context.beginPath();
+      let started = false;
+      for (let i = 0; i < values.length; ++i) {
+        const value = values[i];
+        if (!Number.isFinite(value)) { started = false; continue; }
+        const x = left + i / Math.max(1, values.length - 1) * (right - left);
+        const y = bottom - (value - lo) / (hi - lo) * (bottom - top);
+        if (!started) { context.moveTo(x, y); started = true; }
+        else context.lineTo(x, y);
+      }
+      context.strokeStyle = color;
+      context.lineWidth = 4;
+      context.stroke();
+    }
+
+    function drawChart() {
+      if (meta.state === 0 || chartWrap.clientWidth < 80 || chartWrap.clientHeight < 60) return;
+      const ratio = Math.max(1, window.devicePixelRatio || 1);
+      const width = chartWrap.clientWidth;
+      const height = chartWrap.clientHeight;
+      const pixelWidth = Math.round(width * ratio);
+      const pixelHeight = Math.round(height * ratio);
+      if (chart.width !== pixelWidth || chart.height !== pixelHeight) {
+        chart.width = pixelWidth;
+        chart.height = pixelHeight;
+      }
+      const context = chart.getContext('2d');
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.fillStyle = '#fff';
+      context.fillRect(0, 0, width, height);
+      context.font = '15px sans-serif';
+      context.textBaseline = 'alphabetic';
+      if (data.max.length === 0) return;
+
+      const left = Math.max(52, context.measureText('-000.0').width + 4);
+      const right = width - Math.max(22, context.measureText('0').width + 8);
+      const top = 52;
+      const bottom = height - 38;
+      if (right <= left + 10 || bottom <= top + 10) return;
+
+      let lo = Infinity, hi = -Infinity;
+      const include = (values, enabled) => {
+        if (!enabled) return;
+        for (const value of values) if (Number.isFinite(value)) {
+          lo = Math.min(lo, value); hi = Math.max(hi, value);
+        }
+      };
+      include(data.max, meta.showMax);
+      include(data.min, meta.showMin);
+      include(data.center, meta.showCenter);
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
+      if (hi - lo < .5) { hi += .25; lo -= .25; }
+      const step = niceStep((hi - lo) / 8);
+      lo = Math.floor(lo / step) * step;
+      hi = Math.ceil(hi / step) * step;
+      const majorCount = Math.ceil((hi - lo) / step);
+
+      context.lineWidth = 1;
+      context.strokeStyle = '#eee';
+      for (let major = 0; major <= majorCount; ++major) {
+        const majorValue = lo + major * step;
+        for (let sub = 1; sub < 5; ++sub) {
+          const value = majorValue + sub * step / 5;
+          if (value >= hi) continue;
+          const y = bottom - (value - lo) / (hi - lo) * (bottom - top);
+          context.beginPath(); context.moveTo(left, y); context.lineTo(right, y); context.stroke();
+        }
+      }
+
+      context.lineWidth = 2;
+      context.strokeStyle = '#ccc';
+      context.fillStyle = '#000';
+      context.textAlign = 'right';
+      for (let major = 0; major <= majorCount; ++major) {
+        const value = lo + major * step;
+        if (value > hi + step * .1) continue;
+        const y = bottom - (value - lo) / (hi - lo) * (bottom - top);
+        context.beginPath(); context.moveTo(left, y); context.lineTo(right, y); context.stroke();
+        context.fillText(value.toFixed(1), left - 5, y + 4);
+      }
+
+      const duration = Math.max(meta.intervalNs, data.max.length * meta.intervalNs);
+      const xStep = timeStep(duration, right - left, context);
+      context.lineWidth = 1;
+      context.strokeStyle = '#eee';
+      for (let time = 0; time <= duration; time += xStep) {
+        for (let sub = 1; sub < 5; ++sub) {
+          const minor = time + xStep * sub / 5;
+          if (minor >= duration) continue;
+          const x = left + minor / duration * (right - left);
+          context.beginPath(); context.moveTo(x, top); context.lineTo(x, bottom); context.stroke();
+        }
+      }
+
+      context.lineWidth = 2;
+      context.strokeStyle = '#ccc';
+      context.fillStyle = '#000';
+      context.textAlign = 'center';
+      let previousRight = -Infinity;
+      for (let time = 0; time <= duration; time += xStep) {
+        const x = left + time / duration * (right - left);
+        context.beginPath(); context.moveTo(x, top); context.lineTo(x, bottom); context.stroke();
+        const label = formatDuration(time, duration);
+        const halfWidth = context.measureText(label).width / 2;
+        if (x - halfWidth >= previousRight + 4 || time === 0) {
+          context.fillText(label, x, height - 7);
+          previousRight = x + halfWidth;
+        }
+      }
+
+      drawSeries(context, data.max, meta.showMax, '#f00', lo, hi, left, right, top, bottom);
+      drawSeries(context, data.min, meta.showMin, '#00f', lo, hi, left, right, top, bottom);
+      drawSeries(context, data.center, meta.showCenter, '#dcaa00', lo, hi, left, right, top, bottom);
+
+      context.lineWidth = 5;
+      context.strokeStyle = '#444';
+      context.strokeRect(left, top, right - left, bottom - top);
+      const units = ['°C', '°F', 'K', '°R'];
+      const suffix = ' [' + (units[meta.unit] || '°C') + ']';
+      let legendX = left;
+      const legendY = 33;
+      context.textAlign = 'left';
+      const legend = (enabled, color, label) => {
+        if (!enabled) return;
+        const text = label + suffix;
+        context.fillStyle = color;
+        context.fillText(text, legendX, legendY);
+        legendX += context.measureText(text).width + 18;
+      };
+      legend(meta.showMax, '#f00', 'Max. T');
+      legend(meta.showMin, '#00f', 'Min. T');
+      legend(meta.showCenter, '#dcaa00', 'Temperature');
+    }
+
+    function cameraCanvas() {
+      if (!live.naturalWidth || !live.naturalHeight) throw new Error('No camera frame yet');
+      const output = document.createElement('canvas');
+      output.width = live.naturalWidth;
+      output.height = live.naturalHeight;
+      output.getContext('2d').drawImage(live, 0, 0);
+      return output;
+    }
+
+    function rgb565(canvas) {
+      const context = canvas.getContext('2d');
+      const image = context.getImageData(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < image.data.length; i += 4) {
+        image.data[i] = image.data[i] & 0xf8;
+        image.data[i + 1] = image.data[i + 1] & 0xfc;
+        image.data[i + 2] = image.data[i + 2] & 0xf8;
+      }
+      context.putImageData(image, 0, 0);
+    }
+
+    function stamp() {
+      return new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '_');
+    }
+
+    function downloadCanvas(source, name) {
+      const canvas = document.createElement('canvas');
+      canvas.width = source.width;
+      canvas.height = source.height;
+      canvas.getContext('2d').drawImage(source, 0, 0);
+      const jpeg = meta.imageType === 2;
+      if (meta.imageType === 1) rgb565(canvas);
+      const mime = jpeg ? 'image/jpeg' : 'image/png';
+      const extension = jpeg ? '.jpg' : '.png';
+      return new Promise(resolve => canvas.toBlob(blob => {
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url; link.download = name + extension; link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+        resolve();
+      }, mime, Math.max(0, Math.min(1, meta.imageQuality / 100))));
+    }
+
+    async function savePicture() {
+      try {
+        const camera = cameraCanvas();
+        const chartActive = meta.state !== 0 && chart.width > 0 && chart.height > 0;
+        const name = 'inficam_' + stamp();
+        if (chartActive && meta.exportSeparately) {
+          await downloadCanvas(camera, name);
+          await downloadCanvas(chart, name + '_chart');
+        } else if (chartActive) {
+          const chartWidth = Math.max(1, Math.round(chart.width * camera.height / chart.height));
+          const combined = document.createElement('canvas');
+          combined.width = camera.width + chartWidth;
+          combined.height = camera.height;
+          const context = combined.getContext('2d');
+          context.drawImage(camera, 0, 0);
+          context.drawImage(chart, camera.width, 0, chartWidth, camera.height);
+          await downloadCanvas(combined, name);
+        } else {
+          await downloadCanvas(camera, name);
+        }
+        statusLabel.textContent = 'Picture saved';
+      } catch (error) {
+        statusLabel.textContent = error.message;
+      }
+    }
+
+    function downloadUrl(url, name) {
+      const link = document.createElement('a');
+      link.href = url + '?' + Date.now();
+      link.download = name;
+      link.click();
+    }
+
+    async function waitForVideo(url) {
+      for (let attempt = 0; attempt < 120; ++attempt) {
+        const response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+        if (response.ok) return true;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      return false;
+    }
+
+    async function toggleRecording() {
+      if (savingVideo) return;
+      if (!meta.videoRecording) {
+        recordingExport = {
+          separate: meta.exportSeparately,
+          chart: meta.state !== 0
+        };
+        recordButton.textContent = 'Stop Recording';
+        await command('record_start');
+        return;
+      }
+      savingVideo = true;
+      recordButton.disabled = true;
+      recordButton.textContent = 'Saving MP4...';
+      statusLabel.textContent = '';
+      await command('record_stop');
+      try {
+        if (!await waitForVideo('/video')) throw new Error('Video export timed out');
+        const name = 'inficam_' + stamp();
+        downloadUrl('/video', name + '.mp4');
+        const options = recordingExport || {
+          separate: meta.exportSeparately,
+          chart: meta.state !== 0
+        };
+        if (options.separate && options.chart && await waitForVideo('/chart-video'))
+          downloadUrl('/chart-video', name + '_chart.mp4');
+        statusLabel.textContent = 'Video saved';
+      } catch (error) {
+        statusLabel.textContent = error.message;
+      } finally {
+        savingVideo = false;
+        recordingExport = null;
+        recordButton.disabled = false;
+        recordButton.textContent = 'Record Video';
+      }
+    }
+
+    window.addEventListener('resize', requestDraw);
+    if ('ResizeObserver' in window) new ResizeObserver(requestDraw).observe(chartWrap);
+    pollState();
+  </script>
+</body>
+</html>

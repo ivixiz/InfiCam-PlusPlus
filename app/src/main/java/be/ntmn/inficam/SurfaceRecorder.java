@@ -48,15 +48,16 @@ public class SurfaceRecorder implements Runnable {
 	private MediaCodec.BufferInfo bufferInfo;
 	private volatile boolean endSignal; /* Volatile is important because threading. */
 	private boolean muxerStarted;
-	private Thread thread;
+	private volatile Thread thread;
 	private Uri fileUri;
-	private Uri lastFileUri;
+	private volatile Uri lastFileUri;
 	private ParcelFileDescriptor fileDescriptor;
 
 	/* If enabling audio, request audio permission first! */
 	@SuppressLint("MissingPermission")
 	private Surface _start(Context ctx, int w, int h, boolean sound) throws IOException {
 		this.ctx = ctx;
+		lastFileUri = null;
 		/* Deal with actually getting a file and opening the muxer. */
 		@SuppressLint("SimpleDateFormat")
 		String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
@@ -204,6 +205,11 @@ public class SurfaceRecorder implements Runnable {
 	/** URI of the last completed MP4 recording, retained for Web Control download. */
 	public Uri getLastFileUri() {
 		return lastFileUri;
+	}
+
+	/** Forget a previous export when the corresponding optional recording is not started. */
+	public void clearLastFileUri() {
+		lastFileUri = null;
 	}
 
 	@Override

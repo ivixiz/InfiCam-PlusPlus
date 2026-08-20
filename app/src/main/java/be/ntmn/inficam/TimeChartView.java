@@ -11,22 +11,22 @@ import android.view.View;
 
 import androidx.annotation.Nullable;
 
-import java.util.ArrayList;
 import java.util.Locale;
 
 /** Lightweight on-device temperature history plot. Samples are collected by MainActivity. */
 public final class TimeChartView extends View {
 	private static final long DEFAULT_SAMPLE_NS = 100000000L;
 	private static final int MAX_SAMPLES = 12000;
-	private final ArrayList<Float> maxValues = new ArrayList<>();
-	private final ArrayList<Float> minValues = new ArrayList<>();
-	private final ArrayList<Float> centerValues = new ArrayList<>();
+	private static final int INITIAL_CAPACITY = 256;
+	private float[] maxValues = new float[INITIAL_CAPACITY];
+	private float[] minValues = new float[INITIAL_CAPACITY];
+	private float[] centerValues = new float[INITIAL_CAPACITY];
+	private int sampleCount;
+	private long dataGeneration;
 	private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 	private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 	private final Path path = new Path();
-	private long startedNs;
 	private long lastSampleNs;
-	private long sampleIntervalNs = DEFAULT_SAMPLE_NS;
 	private long effectiveIntervalNs = DEFAULT_SAMPLE_NS;
 	private boolean recording;
 	private boolean showMax, showMin, showCenter;
@@ -48,11 +48,10 @@ public final class TimeChartView extends View {
 
 	public synchronized void start(int tempUnit, boolean max, boolean min, boolean center,
 			long intervalNs) {
-		maxValues.clear(); minValues.clear(); centerValues.clear();
-		startedNs = System.nanoTime();
+		sampleCount = 0;
+		dataGeneration++;
 		lastSampleNs = 0;
-		sampleIntervalNs = Math.max(1_000_000L, intervalNs);
-		effectiveIntervalNs = sampleIntervalNs;
+		effectiveIntervalNs = Math.max(1_000_000L, intervalNs);
 		unit = tempUnit;
 		showMax = max; showMin = min; showCenter = center;
 		recording = true;
@@ -73,42 +72,105 @@ public final class TimeChartView extends View {
 		return bitmap;
 	}
 
+	/**
+	 * Returns an incremental JSON update for Web Control. A generation change means that the
+	 * browser must replace its data (new recording or in-place decimation); otherwise only samples
+	 * after {@code requestedFrom} are serialized.
+	 */
+	public synchronized String getWebStateJson(int state, long requestedGeneration,
+			int requestedFrom, boolean exportSeparately, int imageType, int imageQuality,
+			boolean videoRecording) {
+		int visibleCount = state == 0 ? 0 : sampleCount;
+		boolean reset = requestedGeneration != dataGeneration || requestedFrom < 0 ||
+				requestedFrom > visibleCount;
+		int from = reset ? 0 : requestedFrom;
+		StringBuilder json = new StringBuilder(256 + Math.max(0, visibleCount - from) * 24);
+		json.append('{')
+				.append("\"state\":").append(state)
+				.append(",\"recording\":").append(recording)
+				.append(",\"videoRecording\":").append(videoRecording)
+				.append(",\"generation\":").append(dataGeneration)
+				.append(",\"reset\":").append(reset)
+				.append(",\"from\":").append(from)
+				.append(",\"count\":").append(visibleCount)
+				.append(",\"intervalNs\":").append(effectiveIntervalNs)
+				.append(",\"unit\":").append(unit)
+				.append(",\"showMax\":").append(showMax)
+				.append(",\"showMin\":").append(showMin)
+				.append(",\"showCenter\":").append(showCenter)
+				.append(",\"exportSeparately\":").append(exportSeparately)
+				.append(",\"imageType\":").append(imageType)
+				.append(",\"imageQuality\":").append(imageQuality);
+		appendJsonArray(json, "max", maxValues, from, visibleCount);
+		appendJsonArray(json, "min", minValues, from, visibleCount);
+		appendJsonArray(json, "center", centerValues, from, visibleCount);
+		return json.append('}').toString();
+	}
+
+	private static void appendJsonArray(StringBuilder json, String name, float[] values,
+			int from, int count) {
+		json.append(",\"").append(name).append("\":[");
+		for (int i = from; i < count; ++i) {
+			if (i > from)
+				json.append(',');
+			float value = values[i];
+			if (Float.isFinite(value))
+				json.append(value);
+			else
+				json.append("null");
+		}
+		json.append(']');
+	}
+
 	public synchronized void sample(float max, float min, float center, int tempUnit,
 			boolean showMaxValue, boolean showMinValue, boolean showCenterValue) {
 		if (!recording)
 			return;
 		long now = System.nanoTime();
-		if (lastSampleNs != 0 && now - lastSampleNs < sampleIntervalNs)
+		/* Once old points are decimated, collect future points at the same effective
+		 * interval. This keeps the time axis correct and progressively reduces work
+		 * during multi-hour measurements. */
+		if (lastSampleNs != 0 && now - lastSampleNs < effectiveIntervalNs)
 			return;
 		lastSampleNs = now;
 		unit = tempUnit;
 		showMax = showMaxValue; showMin = showMinValue; showCenter = showCenterValue;
-		if (maxValues.size() >= MAX_SAMPLES) {
+		if (sampleCount >= MAX_SAMPLES) {
 			/* Decimate in one pass instead of shifting one element for every new
 			 * sample. This keeps memory and drawing time bounded for multi-hour logs. */
 			int out = 0;
-			for (int i = 0; i + 1 < maxValues.size(); i += 2) {
-				maxValues.set(out, (maxValues.get(i) + maxValues.get(i + 1)) * .5f);
-				minValues.set(out, (minValues.get(i) + minValues.get(i + 1)) * .5f);
-				centerValues.set(out, (centerValues.get(i) + centerValues.get(i + 1)) * .5f);
+			for (int i = 0; i + 1 < sampleCount; i += 2) {
+				maxValues[out] = (maxValues[i] + maxValues[i + 1]) * .5f;
+				minValues[out] = (minValues[i] + minValues[i + 1]) * .5f;
+				centerValues[out] = (centerValues[i] + centerValues[i + 1]) * .5f;
 				out++;
 			}
-			if ((maxValues.size() & 1) != 0) {
-				int i = maxValues.size() - 1;
-				maxValues.set(out, maxValues.get(i)); minValues.set(out, minValues.get(i));
-				centerValues.set(out, centerValues.get(i)); out++;
+			if ((sampleCount & 1) != 0) {
+				int i = sampleCount - 1;
+				maxValues[out] = maxValues[i];
+				minValues[out] = minValues[i];
+				centerValues[out] = centerValues[i];
+				out++;
 			}
-			while (maxValues.size() > out) {
-				maxValues.remove(maxValues.size() - 1);
-				minValues.remove(minValues.size() - 1);
-				centerValues.remove(centerValues.size() - 1);
-			}
+			sampleCount = out;
 			effectiveIntervalNs = Math.min(Long.MAX_VALUE / 2, effectiveIntervalNs * 2L);
+			dataGeneration++;
 		}
-		maxValues.add(convert(max, tempUnit));
-		minValues.add(convert(min, tempUnit));
-		centerValues.add(convert(center, tempUnit));
+		ensureCapacity(sampleCount + 1);
+		maxValues[sampleCount] = convert(max, tempUnit);
+		minValues[sampleCount] = convert(min, tempUnit);
+		centerValues[sampleCount] = convert(center, tempUnit);
+		sampleCount++;
 		postInvalidateOnAnimation();
+	}
+
+	private void ensureCapacity(int required) {
+		if (required <= maxValues.length)
+			return;
+		int capacity = Math.min(MAX_SAMPLES, Math.max(required, maxValues.length * 2));
+		maxValues = java.util.Arrays.copyOf(maxValues, capacity);
+		minValues = java.util.Arrays.copyOf(minValues, capacity);
+		centerValues = java.util.Arrays.copyOf(centerValues, capacity);
 	}
 
 	private static float convert(float celsius, int tempUnit) {
@@ -132,7 +194,7 @@ public final class TimeChartView extends View {
 	@Override protected synchronized void onDraw(Canvas canvas) {
 		super.onDraw(canvas);
 		int w = getWidth(), h = getHeight();
-		if (w < 80 || h < 60 || maxValues.isEmpty())
+		if (w < 80 || h < 60 || sampleCount == 0)
 			return;
 		/* Leave at least one character of breathing room around axis labels.  The
 		 * left side is based on the widest usual numeric label so negative values
@@ -144,10 +206,16 @@ public final class TimeChartView extends View {
 		if (right <= left + 10.0f)
 			return;
 		float lo = Float.POSITIVE_INFINITY, hi = Float.NEGATIVE_INFINITY;
-		for (int i = 0; i < maxValues.size(); ++i) {
-			if (showMax) { hi = Math.max(hi, maxValues.get(i)); lo = Math.min(lo, maxValues.get(i)); }
-			if (showMin) { hi = Math.max(hi, minValues.get(i)); lo = Math.min(lo, minValues.get(i)); }
-			if (showCenter) { hi = Math.max(hi, centerValues.get(i)); lo = Math.min(lo, centerValues.get(i)); }
+		for (int i = 0; i < sampleCount; ++i) {
+			if (showMax && Float.isFinite(maxValues[i])) {
+				hi = Math.max(hi, maxValues[i]); lo = Math.min(lo, maxValues[i]);
+			}
+			if (showMin && Float.isFinite(minValues[i])) {
+				hi = Math.max(hi, minValues[i]); lo = Math.min(lo, minValues[i]);
+			}
+			if (showCenter && Float.isFinite(centerValues[i])) {
+				hi = Math.max(hi, centerValues[i]); lo = Math.min(lo, centerValues[i]);
+			}
 		}
 		if (!Float.isFinite(lo) || !Float.isFinite(hi)) return;
 		if (hi - lo < 0.5f) { hi += 0.25f; lo -= 0.25f; }
@@ -183,7 +251,7 @@ public final class TimeChartView extends View {
 			canvas.drawText(String.format(Locale.US, "%.1f", yv), left - 5, y + 4, textPaint);
 		}
 		long durationNs = Math.max(effectiveIntervalNs,
-				(long) maxValues.size() * effectiveIntervalNs);
+				(long) sampleCount * effectiveIntervalNs);
 		long xStepNs = timeStep(durationNs, right - left);
 		paint.setStrokeWidth(1.0f);
 		paint.setColor(minorGrid);
@@ -234,15 +302,21 @@ public final class TimeChartView extends View {
 			canvas.drawText("Temperature" + suffix, legendX, legendY, textPaint); }
 	}
 
-	private void drawSeries(Canvas canvas, ArrayList<Float> values, int color, float lo, float hi,
+	private void drawSeries(Canvas canvas, float[] values, int color, float lo, float hi,
 			float left, float right, float top, float bottom) {
 		if ((color == Color.RED && !showMax) || (color == Color.BLUE && !showMin) ||
 				(color == Color.rgb(220, 170, 0) && !showCenter)) return;
 		path.reset();
-		for (int i = 0; i < values.size(); ++i) {
-			float x = left + (float) i / Math.max(1, values.size() - 1) * (right - left);
-			float y = bottom - (values.get(i) - lo) / (hi - lo) * (bottom - top);
-			if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+		boolean started = false;
+		for (int i = 0; i < sampleCount; ++i) {
+			if (!Float.isFinite(values[i])) {
+				started = false;
+				continue;
+			}
+			float x = left + (float) i / Math.max(1, sampleCount - 1) * (right - left);
+			float y = bottom - (values[i] - lo) / (hi - lo) * (bottom - top);
+			if (!started) { path.moveTo(x, y); started = true; }
+			else path.lineTo(x, y);
 		}
 		paint.setColor(color); paint.setStrokeWidth(4); paint.setStyle(Paint.Style.STROKE);
 		canvas.drawPath(path, paint);

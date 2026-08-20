@@ -1,14 +1,14 @@
 package be.ntmn.inficam;
 
+import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.Canvas;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.io.ByteArrayOutputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
@@ -27,6 +27,23 @@ public final class WebViewServer {
 	public interface CommandHandler {
 		void onCommand(String command, String value);
 	}
+	public interface StateProvider {
+		String getState(long generation, int from);
+	}
+	public interface VideoProvider {
+		VideoData open(boolean chart) throws IOException;
+	}
+	public static final class VideoData implements AutoCloseable {
+		private final InputStream input;
+		private final long length;
+
+		public VideoData(InputStream input, long length) {
+			this.input = input;
+			this.length = length;
+		}
+
+		@Override public void close() throws IOException { input.close(); }
+	}
 	private static final int FIRST_PORT = 8080;
 	private static final int LAST_PORT = 8090;
 	private final Object frameLock = new Object();
@@ -34,6 +51,7 @@ public final class WebViewServer {
 	private final Set<Socket> clients = Collections.newSetFromMap(
 			new ConcurrentHashMap<Socket, Boolean>());
 	private final AtomicInteger streamClients = new AtomicInteger();
+	private final byte[] indexPage;
 	private volatile byte[] latestJpeg;
 	private volatile long frameNumber;
 	private volatile boolean running;
@@ -42,17 +60,27 @@ public final class WebViewServer {
 	private Thread acceptThread;
 	private Thread encoderThread;
 	private Bitmap pendingFrame;
+	private Bitmap reusableFrame;
 	private boolean encoderRunning;
 	private volatile CommandHandler commandHandler;
-	private volatile byte[] latestSnapshot;
-	private volatile String snapshotMime = "image/jpeg";
-	private volatile int snapshotType = Util.IMGTYPE_JPEG;
-	private volatile int snapshotQuality = 92;
-	private volatile byte[] latestVideo;
+	private volatile StateProvider stateProvider;
+	private volatile VideoProvider videoProvider;
+
+	public WebViewServer(Context context) {
+		try {
+			indexPage = Util.readStringAsset(context, "web_control.html")
+					.getBytes(StandardCharsets.UTF_8);
+		} catch (IOException e) {
+			throw new IllegalStateException("Missing Web Control page", e);
+		}
+	}
 
 	public void setCommandHandler(CommandHandler handler) {
 		commandHandler = handler;
 	}
+
+	public void setStateProvider(StateProvider provider) { stateProvider = provider; }
+	public void setVideoProvider(VideoProvider provider) { videoProvider = provider; }
 
 	public synchronized String start() throws IOException {
 		if (running)
@@ -89,6 +117,10 @@ public final class WebViewServer {
 			if (pendingFrame != null) {
 				pendingFrame.recycle();
 				pendingFrame = null;
+			}
+			if (reusableFrame != null) {
+				reusableFrame.recycle();
+				reusableFrame = null;
 			}
 			encoderLock.notifyAll();
 		}
@@ -146,6 +178,31 @@ public final class WebViewServer {
 		}
 	}
 
+	/** Returns a bitmap recycled by the encoder, or allocates one for the two-frame pipeline. */
+	public Bitmap acquireFrame(int width, int height) {
+		synchronized (encoderLock) {
+			Bitmap bitmap = reusableFrame;
+			reusableFrame = null;
+			if (bitmap != null && (bitmap.isRecycled() || bitmap.getWidth() != width ||
+					bitmap.getHeight() != height)) {
+				if (!bitmap.isRecycled())
+					bitmap.recycle();
+				bitmap = null;
+			}
+			return bitmap != null ? bitmap :
+					Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+		}
+	}
+
+	private void releaseFrame(Bitmap bitmap) {
+		synchronized (encoderLock) {
+			if (encoderRunning && reusableFrame == null && !bitmap.isRecycled())
+				reusableFrame = bitmap;
+			else if (!bitmap.isRecycled())
+				bitmap.recycle();
+		}
+	}
+
 	private void encodeLoop() {
 		while (true) {
 			Bitmap bitmap;
@@ -173,42 +230,9 @@ public final class WebViewServer {
 					}
 				}
 			} finally {
-				bitmap.recycle();
+				releaseFrame(bitmap);
 			}
 		}
-	}
-
-	/** Publishes the browser download image in the format selected in app settings. */
-	public void publishSnapshot(Bitmap bitmap, int type, int quality) {
-		if (bitmap == null)
-			return;
-		Bitmap source = bitmap;
-		try {
-			if (type == Util.IMGTYPE_PNG565) {
-				source = Bitmap.createBitmap(bitmap.getWidth(), bitmap.getHeight(), Bitmap.Config.RGB_565);
-				android.graphics.Canvas canvas = new android.graphics.Canvas(source);
-				canvas.drawBitmap(bitmap, 0, 0, null);
-			}
-			ByteArrayOutputStream out = new ByteArrayOutputStream(64 * 1024);
-			android.graphics.Bitmap.CompressFormat format = type == Util.IMGTYPE_JPEG
-					? Bitmap.CompressFormat.JPEG : Bitmap.CompressFormat.PNG;
-			if (source.compress(format, quality, out)) {
-				latestSnapshot = out.toByteArray();
-				snapshotMime = format == Bitmap.CompressFormat.JPEG ? "image/jpeg" : "image/png";
-			}
-		} finally {
-			if (source != bitmap)
-				source.recycle();
-		}
-	}
-
-	public void publishVideo(byte[] video) {
-		latestVideo = video;
-	}
-
-	public void setSnapshotFormat(int type, int quality) {
-		snapshotType = type;
-		snapshotQuality = quality;
 	}
 
 	private void acceptLoop() {
@@ -236,16 +260,19 @@ public final class WebViewServer {
 			if (request == null)
 				return;
 			String[] parts = request.split(" ");
+			boolean headOnly = parts.length > 0 && "HEAD".equals(parts[0]);
 			String path = parts.length > 1 ? parts[1] : "/";
 			String header;
 			while ((header = reader.readLine()) != null && !header.isEmpty()) { /* headers */ }
 			if (path.startsWith("/control")) {
 				handleControl(path);
 				writeText(socket, "OK");
-			} else if (path.startsWith("/snapshot")) {
-				serveSnapshot(socket);
+			} else if (path.startsWith("/state")) {
+				serveState(socket, path, headOnly);
+			} else if (path.startsWith("/chart-video")) {
+				serveVideo(socket, true, headOnly);
 			} else if (path.startsWith("/video")) {
-				serveVideo(socket);
+				serveVideo(socket, false, headOnly);
 			} else if (path.startsWith("/stream"))
 				serveStream(socket);
 			else
@@ -286,76 +313,50 @@ public final class WebViewServer {
 		out.flush();
 	}
 
-	private void serveSnapshot(Socket socket) throws IOException {
-		byte[] image = latestSnapshot;
-		String mime = snapshotMime;
-		if (image == null && latestJpeg != null) {
-			if (snapshotType == Util.IMGTYPE_JPEG) {
-				image = latestJpeg;
-				mime = "image/jpeg";
-			} else {
-				Bitmap decoded = BitmapFactory.decodeByteArray(latestJpeg, 0, latestJpeg.length);
-				if (decoded != null) {
-					Bitmap source = decoded;
-					try {
-						if (snapshotType == Util.IMGTYPE_PNG565) {
-							source = Bitmap.createBitmap(decoded.getWidth(), decoded.getHeight(),
-									Bitmap.Config.RGB_565);
-							new Canvas(source).drawBitmap(decoded, 0, 0, null);
-						}
-						ByteArrayOutputStream encoded = new ByteArrayOutputStream(64 * 1024);
-						source.compress(Bitmap.CompressFormat.PNG, snapshotQuality, encoded);
-						image = encoded.toByteArray();
-						mime = "image/png";
-					} finally {
-						if (source != decoded) source.recycle();
-						decoded.recycle();
-					}
-				}
-			}
-		}
-		if (image == null) {
-			writeText(socket, "No frame yet");
+	private void serveState(Socket socket, String path, boolean headOnly) throws IOException {
+		StateProvider provider = stateProvider;
+		if (provider == null) {
+			writeText(socket, "No state provider");
 			return;
 		}
+		long generation = queryLong(path, "generation", -1L);
+		long requestedFrom = queryLong(path, "from", 0L);
+		int from = (int) Math.max(0L, Math.min(Integer.MAX_VALUE, requestedFrom));
+		byte[] body = provider.getState(generation, from).getBytes(StandardCharsets.UTF_8);
 		OutputStream out = socket.getOutputStream();
-		writeHeaders(out, "200 OK", mime, image.length);
-		out.write(image);
+		writeHeaders(out, "200 OK", "application/json; charset=utf-8", body.length);
+		if (!headOnly)
+			out.write(body);
 		out.flush();
 	}
 
-	private void serveVideo(Socket socket) throws IOException {
-		byte[] video = latestVideo;
+	private void serveVideo(Socket socket, boolean chart, boolean headOnly) throws IOException {
+		VideoProvider provider = videoProvider;
+		VideoData video = provider == null ? null : provider.open(chart);
 		if (video == null) {
-			writeHeaders(socket.getOutputStream(), "404 Not Found", "text/plain", 17);
-			socket.getOutputStream().write("No video ready".getBytes(StandardCharsets.US_ASCII));
+			byte[] message = "No video ready".getBytes(StandardCharsets.US_ASCII);
+			writeHeaders(socket.getOutputStream(), "404 Not Found", "text/plain", message.length);
+			if (!headOnly)
+				socket.getOutputStream().write(message);
 			return;
 		}
-		OutputStream out = socket.getOutputStream();
-		writeHeaders(out, "200 OK", "video/mp4", video.length);
-		out.write(video);
-		out.flush();
+		try (VideoData source = video) {
+			OutputStream out = socket.getOutputStream();
+			writeHeaders(out, "200 OK", "video/mp4", source.length);
+			if (!headOnly) {
+				byte[] buffer = new byte[64 * 1024];
+				int count;
+				while ((count = source.input.read(buffer)) != -1)
+					out.write(buffer, 0, count);
+			}
+			out.flush();
+		}
 	}
 
 	private void serveIndex(Socket socket) throws IOException {
-		byte[] body = ("<!doctype html><html><head><meta name=viewport " +
-				"content=width=device-width,initial-scale=1><title>InfiCam</title></head>" +
-				"<body style='margin:0;background:#111;color:#eee;text-align:center;font-family:sans-serif'>" +
-				"<h3>InfiCam Web Control</h3><img id='live' src='/stream' " +
-				"style='display:block;width:min(100%,1280px);height:auto;margin:0 auto' /><div style='display:flex;flex-wrap:nowrap;gap:6px;justify-content:center;align-items:center;padding:8px;overflow-x:auto'>" +
-				"<button onclick=cmd('palette')>Palette</button>" +
-				"<button onclick=cmd('mirror')>Mirror</button>" +
-				"<button onclick=cmd('calibrate')>Calibrate</button>" +
-				"<a href='/snapshot' download='inficam'><button>Save Picture</button></a>" +
-				"<button id=rec onclick=record()>Record Video</button></div>" +
-				"<script>function cmd(c){fetch('/control?cmd='+c)}let recording=false;function record(){" +
-				"if(!recording){recording=true;document.getElementById('rec').textContent='Stop Recording';fetch('/control?cmd=record_start')}" +
-				"else{recording=false;document.getElementById('rec').textContent='Saving MP4...';fetch('/control?cmd=record_stop').then(()=>{let n=0;let t=setInterval(()=>{fetch('/video',{method:'HEAD'}).then(r=>{if(r.ok){clearInterval(t);let a=document.createElement('a');a.href='/video?'+Date.now();a.download='inficam.mp4';a.click();document.getElementById('rec').textContent='Record Video'}});if(++n>30)clearInterval(t)},500)})}}" +
-				"</script></body></html>")
-				.getBytes(StandardCharsets.UTF_8);
 		OutputStream out = socket.getOutputStream();
-		writeHeaders(out, "200 OK", "text/html; charset=utf-8", body.length);
-		out.write(body);
+		writeHeaders(out, "200 OK", "text/html; charset=utf-8", indexPage.length);
+		out.write(indexPage);
 		out.flush();
 	}
 
@@ -395,10 +396,25 @@ public final class WebViewServer {
 		}
 	}
 
-	private static void writeHeaders(OutputStream out, String status, String type, int length)
+	private static long queryLong(String path, String name, long fallback) {
+		int queryStart = path.indexOf('?');
+		if (queryStart < 0)
+			return fallback;
+		for (String pair : path.substring(queryStart + 1).split("&")) {
+			String[] keyValue = pair.split("=", 2);
+			if (keyValue.length != 2 || !name.equals(keyValue[0]))
+				continue;
+			try { return Long.parseLong(keyValue[1]); }
+			catch (NumberFormatException ignored) { return fallback; }
+		}
+		return fallback;
+	}
+
+	private static void writeHeaders(OutputStream out, String status, String type, long length)
 			throws IOException {
-		out.write(("HTTP/1.1 " + status + "\r\nContent-Type: " + type +
-				"\r\nContent-Length: " + length + "\r\nConnection: close\r\n\r\n")
+		String lengthHeader = length >= 0 ? "Content-Length: " + length + "\r\n" : "";
+		out.write(("HTTP/1.1 " + status + "\r\nContent-Type: " + type + "\r\n" +
+				lengthHeader + "Connection: close\r\n\r\n")
 				.getBytes(StandardCharsets.US_ASCII));
 	}
 
