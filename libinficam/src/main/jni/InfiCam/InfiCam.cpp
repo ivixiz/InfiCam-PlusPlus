@@ -196,9 +196,6 @@ void InfiCam::set_raw_validation_shutter(bool closed){
 int InfiCam::stream_start(frame_callback_t *cb) {
 	LOGD("Attempting to start stream\n");
 	frame_callback = cb;
-	frame_stats_start = steady_clock::now();
-	received_frame_count = 0;
-	delivered_frame_count = 0;
 	nonraw_frames_ready = false;
 	nonraw_table_ready = false;
 	if (dev.stream_start(uvc_frame_callback, this,
@@ -308,6 +305,24 @@ void * InfiCam::shutter_thread_func(void * arg){
 			continue;
 		}
 		pthread_mutex_lock(&t->command_mutex);
+		if(t->is_p2_pro){
+			/* SDK_USB_IR 1.2.4 uses updateOOCOrB(B_UPDATE) for a manual
+			 * shutter/NUC cycle on the 256x384 USB camera. */
+			const bool success = t->p2pro_standard_command(P2_CMD_OOC_B_UPDATE, 0);
+			pthread_mutex_unlock(&t->command_mutex);
+			t->is_shutter_calibrating = false;
+			t->is_calibrating = false;
+			pthread_mutex_lock(&t->cal_mutex);
+			pthread_cond_broadcast(&t->cal_request);
+			pthread_mutex_unlock(&t->cal_mutex);
+			if(success) LOGI("P2 Pro shutter calibration complete.\n");
+			else LOGE("P2 Pro shutter calibration failed.\n");
+			/* The loop entered this branch while holding shutter_mutex. Leaving it
+			 * locked deadlocks stream_stop() after the first P2 Pro calibration,
+			 * which in turn freezes Activity.onStop(), USB recovery and split-screen. */
+			pthread_mutex_unlock(&t->shutter_mutex);
+			continue;
+		}
 		t->dev.set_zoom_abs(CMD_SHUTTER);
 		pthread_mutex_unlock(&t->command_mutex);
 
@@ -328,7 +343,6 @@ void * InfiCam::shutter_thread_func(void * arg){
 
 void InfiCam::calibrate(){
 	if(!is_ready) { return; }
-	if(is_p2_pro) { return; } //P2 Pro handles its own shutter cycle.
 	if(suppress_calibration.load()){
 		suppressed_calibration_pending = true;
 		return;
@@ -340,7 +354,9 @@ void InfiCam::calibrate(){
 	pthread_cond_signal(&shutter_request);
 	pthread_mutex_unlock(&shutter_mutex);
 	calibration_shutter_time = steady_clock::now();
-	infiframe->start_calibration();
+	if(!is_p2_pro){
+		infiframe->start_calibration();
+	}
 	refresh_auto_shut_interval();
 }
 
@@ -416,18 +432,6 @@ bool InfiCam::reset_cal_on_bad_data(InfiCam * t, const uint16_t * frame){
 void InfiCam::uvc_frame_callback(uvc_frame_t *frame, void *user_ptr){
 	auto * t = (InfiCam*) user_ptr;
 	uint16_t * final_frame;
-	t->received_frame_count++;
-	const int stats_elapsed_ms = Utils::ms_since(t->frame_stats_start);
-	if(stats_elapsed_ms >= 1000){
-		const double stats_seconds = (double)stats_elapsed_ms / 1000.0;
-		LOGI("Native frame stats: received=%.1ffps delivered=%.1ffps raw=%d\n",
-			 (double)t->received_frame_count / stats_seconds,
-			 (double)t->delivered_frame_count / stats_seconds,
-			 (int)t->cam_settings.use_raw_logic);
-		t->frame_stats_start = steady_clock::now();
-		t->received_frame_count = 0;
-		t->delivered_frame_count = 0;
-	}
 
 	if(t->is_p2_pro){
 		const size_t source_pixels = (size_t)t->uvc_width * (size_t)t->uvc_height;
@@ -445,7 +449,6 @@ void InfiCam::uvc_frame_callback(uvc_frame_t *frame, void *user_ptr){
 		for(size_t i = 0; i < thermal_pixels; ++i){
 			temp_array[i] = ((float)(pixels[i] >> 2) / 16.0f) - 273.15f;
 		}
-		t->delivered_frame_count++;
 		t->frame_callback(t->inficam_jni, temp_array, t->cam_settings);
 		return;
 	}
@@ -717,8 +720,7 @@ void InfiCam::uvc_frame_callback(uvc_frame_t *frame, void *user_ptr){
 			return;
 		}
 
-		t->delivered_frame_count++;
-		t->frame_callback(t->inficam_jni, temp_array, t->cam_settings); //callback the app with the temperature frame
+			t->frame_callback(t->inficam_jni, temp_array, t->cam_settings); //callback the app with the temperature frame
 	}
 }
 
@@ -826,6 +828,48 @@ bool InfiCam::p2pro_long_command(const uint16_t command, const uint16_t paramete
 		*response = (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
 	}
 	return true;
+}
+
+/* SDK_USB_IR's standard command form for a command carrying one byte. The
+ * command word is little-endian and byte 2 is the payload/parameter. */
+bool InfiCam::p2pro_standard_command(const uint16_t command, const uint8_t parameter) {
+	libusb_device_handle *handle = dev.get_libusb_handle();
+	if(handle == nullptr){
+		LOGE("P2 Pro command attempted without a USB handle.\n");
+		return false;
+	}
+
+	uint8_t packet[8]{};
+	packet[0] = (uint8_t)command;
+	packet[1] = (uint8_t)(command >> 8);
+	packet[2] = parameter;
+	int result = libusb_control_transfer(handle, 0x41, 0x45, 0x78, 0x1d00,
+									 packet, sizeof(packet), P2_COMMAND_TIMEOUT_MS);
+	if(result != (int)sizeof(packet)){
+		LOGE("P2 Pro standard command transfer failed: %d.\n", result);
+		return false;
+	}
+
+	for(int attempt = 0; attempt < P2_COMMAND_STATUS_RETRIES; attempt++){
+		uint8_t status = 0xff;
+		result = libusb_control_transfer(handle, 0xc1, 0x44, 0x78, 0x0200,
+									 &status, 1, P2_COMMAND_TIMEOUT_MS);
+		if(result != 1){
+			LOGE("P2 Pro command status transfer failed: %d.\n", result);
+			return false;
+		}
+		if((status & 0x01) != 0 || ((status & 0x02) != 0 && (status & 0xfc) == 0)){
+			Utils::sleep(1);
+			continue;
+		}
+		if((status & 0x02) != 0){
+			LOGE("P2 Pro command failed with status 0x%02x.\n", status);
+			return false;
+		}
+		return true;
+	}
+	LOGE("P2 Pro command timed out waiting for completion.\n");
+	return false;
 }
 
 bool InfiCam::p2pro_get_gain(uint16_t &gain) {

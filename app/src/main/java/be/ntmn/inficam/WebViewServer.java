@@ -3,6 +3,7 @@ package be.ntmn.inficam;
 import android.content.Context;
 import android.graphics.Bitmap;
 
+import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -148,6 +149,15 @@ public final class WebViewServer {
 		return running;
 	}
 
+	/** Drop a stale camera image while preserving connected browser sessions. */
+	public void resetFrames() {
+		synchronized (frameLock) {
+			latestJpeg = null;
+			frameNumber++;
+			frameLock.notifyAll();
+		}
+	}
+
 	public String getUrl() {
 		String ip = getLocalIp();
 		return "http://" + (ip == null ? "127.0.0.1" : ip) + ":" + port;
@@ -204,6 +214,9 @@ public final class WebViewServer {
 	}
 
 	private void encodeLoop() {
+		/* Reuse the compression buffer. At 25 FPS allocating both a stream and its
+		 * backing array for every frame creates avoidable GC pauses on the phone. */
+		ByteArrayOutputStream out = new ByteArrayOutputStream(48 * 1024);
 		while (true) {
 			Bitmap bitmap;
 			synchronized (encoderLock) {
@@ -220,7 +233,7 @@ public final class WebViewServer {
 				pendingFrame = null;
 			}
 			try {
-				ByteArrayOutputStream out = new ByteArrayOutputStream(64 * 1024);
+				out.reset();
 				if (bitmap.compress(Bitmap.CompressFormat.JPEG, 82, out)) {
 					byte[] jpeg = out.toByteArray();
 					synchronized (frameLock) {
@@ -364,7 +377,9 @@ public final class WebViewServer {
 		streamClients.incrementAndGet();
 		try {
 			socket.setSoTimeout(0);
-			OutputStream out = socket.getOutputStream();
+			socket.setTcpNoDelay(true);
+			/* Buffer the boundary, JPEG and trailing CRLF into one socket write. */
+			OutputStream out = new BufferedOutputStream(socket.getOutputStream(), 64 * 1024);
 			String headers = "HTTP/1.1 200 OK\r\n" +
 					"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n" +
 					"Cache-Control: no-cache, no-store, must-revalidate\r\n" +

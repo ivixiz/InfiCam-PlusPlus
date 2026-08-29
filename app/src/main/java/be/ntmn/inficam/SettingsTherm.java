@@ -31,7 +31,7 @@ import java.util.Arrays;
 public class SettingsTherm extends Settings {
 	private static final float[] FALLBACK_RANGE = { Util.ABSOLUTE_ZERO, Float.MAX_VALUE };
 
-	public float[][] thermal_ranges;
+	public volatile float[][] thermal_ranges;
 	private boolean deferCameraUpdates = false;
 	private boolean hasDeferredCameraUpdates = false;
 	private boolean displayOnlyChange = false;

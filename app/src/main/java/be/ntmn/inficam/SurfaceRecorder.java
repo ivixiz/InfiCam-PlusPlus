@@ -49,6 +49,9 @@ public class SurfaceRecorder implements Runnable {
 	private volatile boolean endSignal; /* Volatile is important because threading. */
 	private boolean muxerStarted;
 	private volatile Thread thread;
+	private volatile boolean paused;
+	private volatile long pauseStartedUs;
+	private volatile long pausedDurationUs;
 	private Uri fileUri;
 	private volatile Uri lastFileUri;
 	private ParcelFileDescriptor fileDescriptor;
@@ -136,6 +139,9 @@ public class SurfaceRecorder implements Runnable {
 		}
 
 		endSignal = false;
+		paused = false;
+		pauseStartedUs = 0;
+		pausedDurationUs = 0;
 		thread = new Thread(this);
 		thread.start();
 		return inputSurface;
@@ -156,6 +162,15 @@ public class SurfaceRecorder implements Runnable {
 	public void stop() {
 		try {
 			if (thread != null) {
+				/* Keep the paused state while draining so samples already queued during
+				 * the pause cannot leak into the end of the file. */
+				synchronized (this) {
+					if (paused && pauseStartedUs != 0) {
+						pausedDurationUs += Math.max(0L,
+								System.nanoTime() / 1000L - pauseStartedUs);
+						pauseStartedUs = 0;
+					}
+				}
 				endSignal = true;
 				thread.join();
 				thread = null;
@@ -200,6 +215,8 @@ public class SurfaceRecorder implements Runnable {
 		if (fileUri != null)
 			Util.scanMedia(ctx, fileUri);
 		fileUri = null;
+		paused = false;
+		pauseStartedUs = 0;
 	}
 
 	/** URI of the last completed MP4 recording, retained for Web Control download. */
@@ -210,6 +227,28 @@ public class SurfaceRecorder implements Runnable {
 	/** Forget a previous export when the corresponding optional recording is not started. */
 	public void clearLastFileUri() {
 		lastFileUri = null;
+	}
+
+	/** Pause muxing while keeping codecs drained; resume() removes the gap from timestamps. */
+	public synchronized void pause() {
+		if (thread == null || paused)
+			return;
+		pauseStartedUs = System.nanoTime() / 1000L;
+		paused = true;
+	}
+
+	public synchronized void resume() {
+		if (!paused)
+			return;
+		pausedDurationUs += Math.max(0L, System.nanoTime() / 1000L - pauseStartedUs);
+		pauseStartedUs = 0;
+		paused = false;
+	}
+
+	public boolean isPaused() { return paused; }
+
+	private long outputPresentationTimeUs(long sourceUs) {
+		return paused ? -1L : Math.max(0L, sourceUs - pausedDurationUs);
 	}
 
 	@Override
@@ -235,8 +274,11 @@ public class SurfaceRecorder implements Runnable {
 				assert(encodedData != null);
 				if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0)
 					bufferInfo.size = 0;
-				if (bufferInfo.size != 0)
+				long outputTimeUs = outputPresentationTimeUs(bufferInfo.presentationTimeUs);
+				if (bufferInfo.size != 0 && outputTimeUs >= 0) {
+					bufferInfo.presentationTimeUs = outputTimeUs;
 					muxer.writeSampleData(videoTrack, encodedData, bufferInfo);
+				}
 				videoEncoder.releaseOutputBuffer(encoderStatus, false);
 				if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0)
 					vidDone = true;
@@ -274,8 +316,11 @@ public class SurfaceRecorder implements Runnable {
 					assert(encodedData != null);
 					if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0)
 						bufferInfo.size = 0;
-					if (bufferInfo.size != 0)
+					long outputTimeUs = outputPresentationTimeUs(bufferInfo.presentationTimeUs);
+					if (bufferInfo.size != 0 && outputTimeUs >= 0) {
+						bufferInfo.presentationTimeUs = outputTimeUs;
 						muxer.writeSampleData(audioTrack, encodedData, bufferInfo);
+					}
 					audioEncoder.releaseOutputBuffer(encoderStatus, false);
 					if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0)
 						sndDone = true;

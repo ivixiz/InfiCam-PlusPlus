@@ -22,6 +22,7 @@
 		android:icon="@mipmap/ic_launcher"
 		android:label="@string/app_name"
 		android:roundIcon="@mipmap/ic_launcher_round"
+		android:resizeableActivity="true"
 		android:supportsRtl="true"
 		android:theme="@style/Theme.InfiCam">
 		<!--
@@ -35,7 +36,8 @@
 			android:exported="true"
 			android:launchMode="singleTop"
 			android:directBootAware="true"
-			android:configChanges="keyboardHidden|orientation|screenSize"
+			android:resizeableActivity="true"
+			android:configChanges="keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize"
 			tools:targetApi="n">
 			<intent-filter>
 				<action android:name="android.intent.action.MAIN" />

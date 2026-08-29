@@ -338,6 +338,7 @@ public abstract class Settings extends LinearLayout {
 				slider.setProgress(value);
 			}
 		}
+		int clampValue(int candidate) { return Math.max(min, Math.min(max, candidate)); }
 		@Override
 		void load() {
 			int storedValue = sp.getInt(name, def);
@@ -559,6 +560,64 @@ public abstract class Settings extends LinearLayout {
 			}
 		}
 		throw new IllegalArgumentException("No setting named " + name);
+	}
+
+	/** Apply a value received from Web Control through the normal setting path. */
+	public boolean setFromWeb(String name, String serializedValue) {
+		if (settings == null || sp == null || ed == null)
+			return false;
+		final Setting setting;
+		try {
+			setting = getSetting(name);
+		} catch (IllegalArgumentException e) {
+			return false;
+		}
+		try {
+			if (setting instanceof SettingBool) {
+				if (!"true".equals(serializedValue) && !"false".equals(serializedValue))
+					return false;
+				boolean value = Boolean.parseBoolean(serializedValue);
+				ed.putBoolean(name, value).commit();
+				((SettingBool) setting).setTo(value);
+			} else if (setting instanceof SettingRadioDynamic) {
+				SettingRadioDynamic radio = (SettingRadioDynamic) setting;
+				int value = Integer.parseInt(serializedValue);
+				if (value < 0 || value >= radio.items.length) return false;
+				ed.putInt(name, value).commit();
+				radio.setTo(value);
+			} else if (setting instanceof SettingRadio) {
+				SettingRadio radio = (SettingRadio) setting;
+				int value = Integer.parseInt(serializedValue);
+				if (value < 0 || value >= radio.items.length) return false;
+				ed.putInt(name, value).commit();
+				radio.setTo(value);
+			} else if (setting instanceof SettingSliderFloat) {
+				SettingSliderFloat slider = (SettingSliderFloat) setting;
+				float value = Float.parseFloat(serializedValue);
+				if (!Float.isFinite(value)) return false;
+				int stored = Math.round(value * slider.div);
+				stored = slider.clampValue(stored);
+				ed.putInt(name, stored).commit();
+				slider.setTo(stored);
+			} else if (setting instanceof SettingSlider) {
+				SettingSlider slider = (SettingSlider) setting;
+				int value = Integer.parseInt(serializedValue);
+				value = slider.clampValue(value);
+				ed.putInt(name, value).commit();
+				slider.setTo(value);
+			} else if (setting instanceof SettingFloatInput) {
+				SettingFloatInput input = (SettingFloatInput) setting;
+				float value = input.clamp(Float.parseFloat(serializedValue));
+				ed.putFloat(name, value).commit();
+				input.setTo(value);
+			} else {
+				return false;
+			}
+			handleChange();
+			return true;
+		} catch (NumberFormatException e) {
+			return false;
+		}
 	}
 
 	public Setting[] getSettings() { return settings; }

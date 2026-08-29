@@ -41,6 +41,7 @@ class InfiCam {
 	 * selects high gain (normal-temperature range) or low gain
 	 * (high-temperature range). */
 	static const uint16_t P2_CMD_PROP_TPD_PARAMS = 0x8514;
+	static const uint16_t P2_CMD_OOC_B_UPDATE = 0xc10d;
 	static const uint16_t P2_CMD_SET = 0x4000;
 	static const uint16_t P2_TPD_PROP_GAIN_SEL = 5;
 	static const uint16_t P2_GAIN_LOW = 0;
@@ -88,10 +89,6 @@ private:
 	float range_validation_start_variance = NAN;
 	int range_validation_start_valid_count = 0;
 	bool range_validation_holds_shutter = false;
-	steady_clock::time_point frame_stats_start;
-	uint64_t received_frame_count = 0;
-	uint64_t delivered_frame_count = 0;
-
 	//synchronisation
 	pthread_mutex_t command_mutex{};
 
@@ -119,6 +116,7 @@ private:
 	void set_raw_validation_shutter(bool closed);
 	bool p2pro_long_command(uint16_t command, uint16_t parameter, uint32_t value,
 							uint32_t extra, uint32_t response_size, uint16_t *response);
+	bool p2pro_standard_command(uint16_t command, uint8_t parameter);
 	bool p2pro_get_gain(uint16_t &gain);
 	bool p2pro_set_gain(uint16_t gain);
 

@@ -14,6 +14,8 @@ import android.content.res.Configuration;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Rect;
@@ -64,7 +66,7 @@ public class MainActivity extends BaseActivity {
 	private SurfaceMuxer.InputSurface inputSurface; /* Input surface for the thermal image. */
 	private SurfaceMuxer.ThroughSurface thruSurface; /* We sharpen separately to do it lo-res. */
 	private SurfaceMuxer.InputSurface videoSurface; /* To draw video from the normal camera. */
-	private Overlay overlayScreen, overlayRecord, overlayPicture, overlayWeb;
+	private Overlay overlayScreen, overlayRecord, overlayPicture;
 	private SurfaceMuxer.OutputSurface outScreen, outRecord, outWeb;
 	private final Overlay.Data overlayData = new Overlay.Data();
 	private final Overlay.Data renderOverlayData = new Overlay.Data();
@@ -86,6 +88,7 @@ public class MainActivity extends BaseActivity {
 	private SurfaceMuxer.OutputSurface outChartRecord;
 	private boolean recordAudio;
 	private boolean recordChartSeparately;
+	private boolean pauseRecordingAfterFrame;
 	private final Rect rect = new Rect(); /* To use during frames, to avoid allocating it there. */
 
 	private CameraView cameraView;
@@ -108,11 +111,12 @@ public class MainActivity extends BaseActivity {
 	private static final int TIME_CHART_BUTTON_RESERVE_DP = 72;
 	private TextView webViewAddress;
 	private WebViewServer webViewServer;
-	private boolean webMirror;
 	private long lastWebCaptureNs;
 	private static final long WEB_FRAME_INTERVAL_NS = 40000000L; // target camera rate: 25 FPS
+	private static final String WEB_HEX = "0123456789abcdef";
 	private boolean rotate = false;
 	private int orientation = 0;
+	private int preferredScreenOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
 	private boolean swapControls = false;
 	private volatile boolean applyLocalCorrection = true;
 	private volatile float localCorrection = 0.0f;
@@ -126,6 +130,10 @@ public class MainActivity extends BaseActivity {
 	private float scale = 1.0f;
 	private volatile int imgType;
 	private volatile int imgQuality;
+	private volatile int batteryScale = 100;
+	private volatile int batteryLevel = 0;
+	private volatile boolean batteryCharging = false;
+	private volatile boolean batteryVisible = true;
 	private float[] latestTempBuffer = new float[0];
 	private float[] renderTempBuffer = new float[0];
 	private final InfiCam.FrameInfo latestFrameInfo = new InfiCam.FrameInfo();
@@ -134,21 +142,6 @@ public class MainActivity extends BaseActivity {
 	private long latestFrameSequence = 0;
 	private boolean renderPending = false;
 	private volatile boolean renderingEnabled = false;
-	private static final boolean RENDER_TIMING_LOGS = true;
-	private long renderStatsStartNs = 0;
-	private long incomingFrameCount = 0;
-	private long renderedFrameCount = 0;
-	private long coalescedFrameCount = 0;
-	private long renderTotalNs = 0;
-	private long renderPaletteTotalNs = 0;
-	private long renderLockCanvasTotalNs = 0;
-	private long renderUnlockCanvasTotalNs = 0;
-	private long renderInputDrawTotalNs = 0;
-	private long renderThruSwapTotalNs = 0;
-	private long renderScreenSwapTotalNs = 0;
-	private long renderRecordSwapTotalNs = 0;
-	private long renderScreenSwapCount = 0;
-	private long renderRecordSwapCount = 0;
 
 	private final Runnable calibrationMessageRunnable = new Runnable() {
 		@Override
@@ -236,40 +229,32 @@ public class MainActivity extends BaseActivity {
 		public void onDeviceFound(UsbDevice p_usb_device) {
 			if (!activityStarted || usbConnection != null || usbConnectionPending)
 				return;
-			if(p_usb_device.getProductName() == null){
+			/* P2 Pro can briefly expose no string descriptors while it re-enumerates
+			 * after a loose-contact disconnect. VID:PID is sufficient for this model. */
+			boolean isP2Pro = p_usb_device.getVendorId() == 0x0bda &&
+					p_usb_device.getProductId() == 0x5830;
+			String productName = p_usb_device.getProductName();
+			if (productName == null && !isP2Pro) {
 				return;
 			}
 			/* This P2 Pro reports the generic product name "USB Camera", so VID:PID
 			 * is the only reliable identifier available to Android. */
-			boolean isP2Pro = p_usb_device.getVendorId() == 0x0bda &&
-					p_usb_device.getProductId() == 0x5830;
 			//From original app, yes it's big.
 			boolean is_ours =
-				isP2Pro || (!p_usb_device.getProductName().contains("Search") &&
-				(p_usb_device.getProductName().contains("FX3") ||
-					p_usb_device.getProductName().contains("PNS") ||
-					p_usb_device.getProductName().contains("T5") ||
-					p_usb_device.getProductName().contains("T2_V2") ||
-					p_usb_device.getProductName().contains("T2S+") ||
-					p_usb_device.getProductName().contains("T2-Mg_V2") ||
-					p_usb_device.getProductName().contains("Xtherm") ||
-					p_usb_device.getProductName().contains("Xmodule") ||
-					p_usb_device.getProductName().contains("S0") ||
-					p_usb_device.getProductName().contains("S1") ||
-					p_usb_device.getProductName().contains("T2L") ||
-					p_usb_device.getProductName().contains("T2S") ||
-					p_usb_device.getProductName().contains("DL") ||
-					p_usb_device.getProductName().contains("DV") ||
-					p_usb_device.getProductName().contains("T3S") ||
-					p_usb_device.getProductName().contains("T3H") ||
-					p_usb_device.getProductName().contains("T3-612") ||
-					p_usb_device.getProductName().contains("T3Pro") ||
-					p_usb_device.getProductName().contains("T3C") ||
-					p_usb_device.getProductName().contains("DP") ||
-					p_usb_device.getProductName().contains("T19") ||
-					p_usb_device.getProductName().contains("DX300")));
+				isP2Pro || (!productName.contains("Search") &&
+				(productName.contains("FX3") || productName.contains("PNS") ||
+					productName.contains("T5") || productName.contains("T2_V2") ||
+					productName.contains("T2S+") || productName.contains("T2-Mg_V2") ||
+					productName.contains("Xtherm") || productName.contains("Xmodule") ||
+					productName.contains("S0") || productName.contains("S1") ||
+					productName.contains("T2L") || productName.contains("T2S") ||
+					productName.contains("DL") || productName.contains("DV") ||
+					productName.contains("T3S") || productName.contains("T3H") ||
+					productName.contains("T3-612") || productName.contains("T3Pro") ||
+					productName.contains("T3C") || productName.contains("DP") ||
+					productName.contains("T19") || productName.contains("DX300")));
 			if (!is_ours) {
-				Log.e("inficam","Device is not recognized: "+p_usb_device.getProductName());
+				Log.e("inficam","Device is not recognized: "+productName);
 				return;
 			}
 
@@ -287,6 +272,7 @@ public class MainActivity extends BaseActivity {
 				connect(foundDevice, new ConnectCallback() {
 						@Override
 						public void onConnected(UsbDevice dev, UsbDeviceConnection conn) {
+							handler.removeCallbacks(reconnectRunnable);
 							disconnect(); /* Important! Frame callback not allowed during connect. */
 							usbConnectionPending = false;
 							usb_device = dev;
@@ -299,6 +285,7 @@ public class MainActivity extends BaseActivity {
 
 					@Override
 						public void onPermissionDenied(UsbDevice dev) {
+							handler.removeCallbacks(reconnectRunnable);
 							usbConnectionPending = false;
 							messageView.showMessage(R.string.msg_permdenied_usb);
 						}
@@ -315,17 +302,33 @@ public class MainActivity extends BaseActivity {
 
 		@Override
 		public void onDisconnect(UsbDevice dev) {
-			if (dev != null && dev.equals(usb_device)) {
+			if (sameUsbDevice(dev, usb_device)) {
 				usbConnectionPending = false;
 				disconnect();
 				scheduleReconnect(400);
 			}
 		}
 	};
-	private final Runnable reconnectRunnable = () -> {
-		if (activityStarted && usbConnection == null && !usbConnectionPending) {
+
+	private static boolean sameUsbDevice(UsbDevice left, UsbDevice right) {
+		if (left == null || right == null)
+			return false;
+		return left.equals(right) || (left.getVendorId() == right.getVendorId() &&
+				left.getProductId() == right.getProductId() &&
+				left.getDeviceName().equals(right.getDeviceName()));
+	}
+
+	private final Runnable reconnectRunnable = new Runnable() {
+		@Override public void run() {
+			if (!activityStarted || usbConnection != null || usbConnectionPending)
+				return;
 			usb_device = null;
 			usbMonitor.scan();
+			/* A detach broadcast often arrives before the connector is electrically
+			 * stable again. Keep scanning cheaply until attach is visible, rather than
+			 * relying on a single broadcast/one-shot scan. */
+			if (activityStarted && usbConnection == null && !usbConnectionPending)
+				handler.postDelayed(this, 750);
 		}
 	};
 
@@ -388,8 +391,6 @@ public class MainActivity extends BaseActivity {
 				synchronized (frameLock) {
 					if (!renderingEnabled)
 						return;
-					if (renderStatsStartNs == 0)
-						renderStatsStartNs = System.nanoTime();
 					if (latestTempBuffer.length != temp.length)
 						latestTempBuffer = new float[temp.length];
 					System.arraycopy(temp, 0, latestTempBuffer, 0, temp.length);
@@ -397,7 +398,6 @@ public class MainActivity extends BaseActivity {
 					copyFrameInfo(fi, latestFrameInfo);
 					overlayData.fi = latestFrameInfo;
 					overlayData.temp = latestTempBuffer;
-					incomingFrameCount++;
 					latestFrameSequence++;
 
 					if (scale > 1.0f) {
@@ -426,9 +426,7 @@ public class MainActivity extends BaseActivity {
 
 					if(inputSurface.surface == null) { return; } //We exited the app
 
-					if (renderPending) {
-						coalescedFrameCount++;
-					} else {
+					if (!renderPending) {
 						renderPending = true;
 						handler.post(renderFrameRunnable);
 					}
@@ -439,7 +437,6 @@ public class MainActivity extends BaseActivity {
 	private final Runnable renderFrameRunnable = new Runnable() {
 		@Override
 		public void run() {
-			long renderStartNs = System.nanoTime();
 			long sequence;
 			float sensorMax;
 			synchronized (frameLock) {
@@ -476,9 +473,8 @@ public class MainActivity extends BaseActivity {
 			thermalRenderer.renderTemperatures(inputSurface.surface,
 					settingsPalette.paletteMap, renderTempBuffer, rangeMin, rangeMax, sensorMax);
 
-			RenderTimings timings = handleFrame(renderOverlayData);
-			timings.totalNs = System.nanoTime() - renderStartNs;
-			logRenderTimings(sequence, timings);
+			handleFrame(renderOverlayData);
+			finishRender(sequence);
 		}
 	};
 
@@ -487,20 +483,6 @@ public class MainActivity extends BaseActivity {
 			return;
 		for (int i = 0; i < temp.length; ++i)
 			temp[i] += localCorrection;
-	}
-
-	private static class RenderTimings {
-		long totalNs;
-		long inputDrawNs;
-		long thruSwapNs;
-		long screenSwapNs;
-		long recordSwapNs;
-	}
-
-	private static double avgMs(long totalNs, long count) {
-		if (count <= 0)
-			return 0.0;
-		return totalNs / 1000000.0 / count;
 	}
 
 	private void copyFrameInfo(InfiCam.FrameInfo src, InfiCam.FrameInfo dst) {
@@ -516,84 +498,13 @@ public class MainActivity extends BaseActivity {
 		dst.settings.distance = src.settings.distance;
 	}
 
-	private void logRenderTimings(long renderedSequence, RenderTimings timings) {
+	private void finishRender(long renderedSequence) {
 		synchronized (frameLock) {
-			renderedFrameCount++;
-			renderTotalNs += timings.totalNs;
-			renderPaletteTotalNs += thermalRenderer.lastPaletteNs;
-			renderLockCanvasTotalNs += thermalRenderer.lastLockCanvasNs;
-			renderUnlockCanvasTotalNs += thermalRenderer.lastUnlockCanvasNs;
-			renderInputDrawTotalNs += timings.inputDrawNs;
-			renderThruSwapTotalNs += timings.thruSwapNs;
-			if (timings.screenSwapNs > 0) {
-				renderScreenSwapTotalNs += timings.screenSwapNs;
-				renderScreenSwapCount++;
-			}
-			if (timings.recordSwapNs > 0) {
-				renderRecordSwapTotalNs += timings.recordSwapNs;
-				renderRecordSwapCount++;
-			}
-
-			long nowNs = System.nanoTime();
-			long elapsedNs = nowNs - renderStatsStartNs;
-			if (RENDER_TIMING_LOGS && renderStatsStartNs != 0 &&
-					elapsedNs >= 1000000000L) {
-				double seconds = elapsedNs / 1000000000.0;
-				Log.d("inficam", String.format(Locale.US,
-						"Render stats: incoming=%.1ffps rendered=%.1ffps coalesced=%d " +
-								"total=%.2fms palette=%.2fms lockCanvas=%.2fms unlockCanvas=%.2fms " +
-								"inputDraw=%.2fms thruSwap=%.2fms screenSwap=%.2fms recordSwap=%.2fms",
-						incomingFrameCount / seconds,
-						renderedFrameCount / seconds,
-						coalescedFrameCount,
-						avgMs(renderTotalNs, renderedFrameCount),
-						avgMs(renderPaletteTotalNs, renderedFrameCount),
-						avgMs(renderLockCanvasTotalNs, renderedFrameCount),
-						avgMs(renderUnlockCanvasTotalNs, renderedFrameCount),
-						avgMs(renderInputDrawTotalNs, renderedFrameCount),
-						avgMs(renderThruSwapTotalNs, renderedFrameCount),
-						avgMs(renderScreenSwapTotalNs, renderScreenSwapCount),
-						avgMs(renderRecordSwapTotalNs, renderRecordSwapCount)));
-				renderStatsStartNs = nowNs;
-				incomingFrameCount = 0;
-				renderedFrameCount = 0;
-				coalescedFrameCount = 0;
-				renderTotalNs = 0;
-				renderPaletteTotalNs = 0;
-				renderLockCanvasTotalNs = 0;
-				renderUnlockCanvasTotalNs = 0;
-				renderInputDrawTotalNs = 0;
-				renderThruSwapTotalNs = 0;
-				renderScreenSwapTotalNs = 0;
-				renderRecordSwapTotalNs = 0;
-				renderScreenSwapCount = 0;
-				renderRecordSwapCount = 0;
-			}
-
 			if (latestFrameSequence != renderedSequence && inputSurface.surface != null) {
 				handler.post(renderFrameRunnable);
 			} else {
 				renderPending = false;
 			}
-		}
-	}
-
-	private void resetRenderStats() {
-		synchronized (frameLock) {
-			renderStatsStartNs = 0;
-			incomingFrameCount = 0;
-			renderedFrameCount = 0;
-			coalescedFrameCount = 0;
-			renderTotalNs = 0;
-			renderPaletteTotalNs = 0;
-			renderLockCanvasTotalNs = 0;
-			renderUnlockCanvasTotalNs = 0;
-			renderInputDrawTotalNs = 0;
-			renderThruSwapTotalNs = 0;
-			renderScreenSwapTotalNs = 0;
-			renderRecordSwapTotalNs = 0;
-			renderScreenSwapCount = 0;
-			renderRecordSwapCount = 0;
 		}
 	}
 
@@ -702,14 +613,10 @@ public class MainActivity extends BaseActivity {
 				if (!isCurrentConnection(token, conn))
 					return;
 
-				/* P2 Pro's 256x384 UVC stream already contains calibrated Y16
-				 * temperatures. It does not implement this app's zoom-based shutter
-				 * calibration protocol, so waiting for it leaves the UI on
-				 * "Calibrating..." forever. */
-				boolean isP2Pro = dev.getVendorId() == 0x0bda &&
-						dev.getProductId() == 0x5830;
-				if (!isP2Pro)
-					infiCam.calibrateBlocking();
+				/* Run a first shutter/NUC cycle before declaring the stream ready.
+				 * P2 Pro uses its IRCMD OOC/B command; other cameras retain their
+				 * existing UVC shutter path. */
+				infiCam.calibrateBlocking();
 				handler.post(() -> {
 					if (!isCurrentConnection(token, conn))
 						return;
@@ -718,10 +625,6 @@ public class MainActivity extends BaseActivity {
 					messageView.clearMessage();
 					messageView.showMessage(getString(R.string.msg_connected,
 							dev.getProductName()));
-					resetRenderStats();
-					Log.i("inficam", String.format(Locale.US,
-							"Frame diagnostics started: connection=%d size=%dx%d",
-							token, width, height));
 				});
 			} catch (Exception e) {
 				String message = e.getMessage() == null ? getString(R.string.msg_connect_failed) :
@@ -731,6 +634,7 @@ public class MainActivity extends BaseActivity {
 						return;
 					disconnect();
 					messageView.showMessage(message);
+					scheduleReconnect(700);
 				});
 			}
 		}, "InfiCam connect").start();
@@ -807,12 +711,12 @@ public class MainActivity extends BaseActivity {
 	}
 
 
-	private long drawFrame(SurfaceMuxer.OutputSurface os, Overlay overlay, boolean swap,
+	private void drawFrame(SurfaceMuxer.OutputSurface os, Overlay overlay, boolean swap,
 						   Overlay.Data data) {
-		return drawFrame(os, overlay, swap, data, false);
+		drawFrame(os, overlay, swap, data, false);
 	}
 
-	private long drawFrame(SurfaceMuxer.OutputSurface os, Overlay overlay, boolean swap,
+	private void drawFrame(SurfaceMuxer.OutputSurface os, Overlay overlay, boolean swap,
 						   Overlay.Data data, boolean includeChart) {
 		getRect(rect, os.width, os.height);
 		os.clear(0, 0, 0, 1);
@@ -841,18 +745,21 @@ public class MainActivity extends BaseActivity {
 		// TODO draw normal video if needed
 		if (swap) {
 			os.setPresentationTime(inputSurface.surfaceTexture.getTimestamp());
-			long startNs = System.nanoTime();
 			os.swapBuffers();
-			return System.nanoTime() - startNs;
 		}
-		return 0;
 	}
 
-	private RenderTimings handleFrame(Overlay.Data data) {
-		RenderTimings timings = new RenderTimings();
+	/** Render only the false-colour sensor image for Web Control. The browser draws all
+	 * measurement labels and the palette scale as resolution-independent canvas graphics. */
+	private void drawWebFrame(SurfaceMuxer.OutputSurface output) {
+		output.clear(0, 0, 0, 1);
+		thruSurface.draw(output, iMode, 0, 0, output.width, output.height);
+	}
+
+	private void handleFrame(Overlay.Data data) {
 		if (disconnecting) {
 			/* Don't try stuff when disconnected. */
-			return timings;
+			return;
 		}
 		if (timeChart != null && timeChart.isRecording() && data.mmac != null)
 			timeChart.sample(data.mmac.max, data.mmac.min, data.mmac.center, data.tempUnit,
@@ -863,12 +770,8 @@ public class MainActivity extends BaseActivity {
 		 *   meaning what's in the SurfaceTexture buffers after the updateTexImage() calls
 		 *   surfaceMuxer should do.
 		 */
-		long startNs = System.nanoTime();
 		inputSurface.draw(thruSurface, SurfaceMuxer.DM_SHARPEN);
-		timings.inputDrawNs = System.nanoTime() - startNs;
-		startNs = System.nanoTime();
 		thruSurface.swapBuffers();
-		timings.thruSwapNs = System.nanoTime() - startNs;
 
 		if (takePic && imgCompressThread == null) {
 			messageView.showMessage(R.string.msg_permdenied_storage);
@@ -916,31 +819,12 @@ public class MainActivity extends BaseActivity {
 			}
 		}
 
-		if (webViewServer != null && webViewServer.wantsFrame() && outWeb != null &&
-				System.nanoTime() - lastWebCaptureNs >= WEB_FRAME_INTERVAL_NS) {
-			lastWebCaptureNs = System.nanoTime();
-			Bitmap webBitmap = null;
-			try {
-				overlayWeb.setSize(outWeb.width, outWeb.height);
-				drawFrame(outWeb, overlayWeb, false, data);
-				webBitmap = webViewServer.acquireFrame(outWeb.width, outWeb.height);
-				webBitmap = outWeb.getBitmap(webBitmap);
-				if (webViewServer.publish(webBitmap))
-					webBitmap = null; // The asynchronous encoder owns it now.
-			} catch (RuntimeException e) {
-				Log.w("inficam", "Web View frame failed", e);
-			} finally {
-				if (webBitmap != null)
-					webBitmap.recycle();
-			}
-		}
-
 		if (outScreen != null)
-			timings.screenSwapNs = drawFrame(outScreen, overlayScreen, true, data);
-		if (outRecord != null)
-			timings.recordSwapNs = drawFrame(outRecord, overlayRecord, true, data,
+			drawFrame(outScreen, overlayScreen, true, data);
+		if (outRecord != null && !recorder.isPaused())
+			drawFrame(outRecord, overlayRecord, true, data,
 				!recordChartSeparately);
-		if (outChartRecord != null && timeChart != null) {
+		if (outChartRecord != null && timeChart != null && !chartRecorder.isPaused()) {
 			Bitmap chart = timeChart.snapshot();
 			if (chart != null) {
 				drawChartVideoFrame(outChartRecord, chart);
@@ -949,8 +833,39 @@ public class MainActivity extends BaseActivity {
 				outChartRecord.swapBuffers();
 			}
 		}
+		if (pauseRecordingAfterFrame && outRecord != null) {
+			pauseRecordingAfterFrame = false;
+			setVideoPausedForChart(true);
+		}
 
-		return timings;
+		/* Present the phone/recording surfaces first. GPU readback for MJPEG can
+		 * then never delay the current frame reaching the local display. */
+		if (webViewServer != null && webViewServer.wantsFrame() && outWeb != null &&
+				System.nanoTime() - lastWebCaptureNs >= WEB_FRAME_INTERVAL_NS) {
+			lastWebCaptureNs = System.nanoTime();
+			Bitmap webBitmap = null;
+			try {
+				/* FrameInfo is authoritative. Different supported cameras have different
+				 * native resolutions, and portrait rendering swaps the sensor axes. */
+				int webWidth = data.rotate90 ? data.fi.height : data.fi.width;
+				int webHeight = data.rotate90 ? data.fi.width : data.fi.height;
+				if (webWidth <= 0 || webHeight <= 0)
+					return;
+				if (outWeb.width != webWidth || outWeb.height != webHeight)
+					outWeb.setSize(webWidth, webHeight);
+				drawWebFrame(outWeb);
+				webBitmap = webViewServer.acquireFrame(outWeb.width, outWeb.height);
+				webBitmap = outWeb.getBitmap(webBitmap);
+				if (webViewServer.publish(webBitmap))
+					webBitmap = null;
+			} catch (RuntimeException e) {
+				Log.w("inficam", "Web View frame failed", e);
+			} finally {
+				if (webBitmap != null)
+					webBitmap.recycle();
+			}
+		}
+
 	}
 
 	/** Preserve the chart aspect ratio if the view changes size while recording. */
@@ -1041,21 +956,231 @@ public class MainActivity extends BaseActivity {
 				int next = (settingsPalette.getPalette().get() + 1) % Palette.palettes.length;
 				settingsPalette.getPalette().setTo(next);
 				messageView.shortMessage(Palette.palettes[next].name);
-			} else if ("mode".equals(command)) {
-				setIMode((iMode + 1) % 5);
 			} else if ("mirror".equals(command)) {
-				webMirror = !webMirror;
-				setMirror(webMirror);
+				settings.setFromWeb("mirror", Boolean.toString(!overlayData.mirror));
 			} else if ("calibrate".equals(command)) {
 				calibrate(false);
+			} else if ("palette_lock".equals(command)) {
+				setPaletteLocked(Boolean.parseBoolean(value));
+			} else if ("palette_range".equals(command)) {
+				String[] values = value.split(",", 2);
+				if (values.length == 2) try {
+					setManualPaletteRange(Float.parseFloat(values[0]),
+							Float.parseFloat(values[1]));
+				} catch (NumberFormatException ignored) { }
+			} else if ("setting".equals(command)) {
+				applyWebSetting(settings, value);
+			} else if ("measurement".equals(command)) {
+				applyWebSetting(settingsMeasure, value);
+			} else if ("thermometry".equals(command)) {
+				applyWebSetting(settingsTherm, value);
+			} else if ("chart_toggle".equals(command)) {
+				toggleTimeChart();
+			} else if ("chart_delete".equals(command)) {
+				deleteTimeChart();
 			} else if ("record_start".equals(command)) {
 				if (usbConnection != null && !recorder.isRecording())
-					startRecording(false, true);
+					startRecording(false);
 			} else if ("record_stop".equals(command)) {
 				if (recorder.isRecording())
 					stopRecording();
 			}
 		});
+	}
+
+	private static void applyWebSetting(Settings target, String value) {
+		int separator = value.indexOf('=');
+		if (separator > 0)
+			target.setFromWeb(value.substring(0, separator), value.substring(separator + 1));
+	}
+
+	private static String webFloat(float value, float fallback) {
+		return String.format(Locale.US, "%.6g", Float.isFinite(value) ? value : fallback);
+	}
+
+	private static void appendWebColor(StringBuilder json, int color) {
+		json.append('"').append('#');
+		for (int shift = 20; shift >= 0; shift -= 4)
+			json.append(WEB_HEX.charAt((color >> shift) & 0xf));
+		json.append('"');
+	}
+
+	/** Adds lightweight control state to the chart delta response used by Web Control. */
+	private String buildWebStateJson(long generation, int from) {
+		TimeChartView chart = timeChart;
+		String chartState = chart == null ?
+				"{\"state\":0,\"recording\":false,\"videoRecording\":false," +
+						"\"generation\":0,\"reset\":true,\"from\":0,\"count\":0," +
+						"\"intervalNs\":100000000,\"unit\":0,\"showMax\":false," +
+						"\"showMin\":false,\"showCenter\":false,\"exportSeparately\":false," +
+						"\"imageType\":2,\"imageQuality\":92,\"viewWidth\":0,\"viewHeight\":0," +
+						"\"max\":[],\"min\":[]," +
+						"\"center\":[]}" :
+				chart.getWebStateJson(timeChartState, generation, from,
+						exportChartSeparately, imgType, imgQuality, recorder.isRecording());
+
+		float rangeMin, rangeMax, boundMin, boundMax;
+		float measuredMin = 0.0f, measuredMax = 0.0f, measuredCenter = 0.0f;
+		int minX = 0, minY = 0, maxX = 0, maxY = 0, sensorWidth = 0, sensorHeight = 0;
+		boolean rangeLocked, mirror, rotate, rotate90, showMin, showMax, showCenter,
+				showPalette;
+		float webScale;
+		int tempUnit;
+		long webFrameSequence;
+		synchronized (frameLock) {
+			rangeLocked = Float.isFinite(overlayData.rangeMin) &&
+					Float.isFinite(overlayData.rangeMax);
+			rangeMin = rangeLocked ? overlayData.rangeMin :
+					(overlayData.mmac == null ? paletteManualMin : overlayData.mmac.min);
+			rangeMax = rangeLocked ? overlayData.rangeMax :
+					(overlayData.mmac == null ? paletteManualMax : overlayData.mmac.max);
+			mirror = overlayData.mirror;
+			rotate = overlayData.rotate;
+			rotate90 = overlayData.rotate90;
+			webScale = overlayData.scale;
+			tempUnit = overlayData.tempUnit;
+			showMin = overlayData.showMin;
+			showMax = overlayData.showMax;
+			showCenter = overlayData.showCenter;
+			showPalette = overlayData.showPalette;
+			webFrameSequence = latestFrameSequence;
+			if (overlayData.fi != null) {
+				sensorWidth = overlayData.fi.width;
+				sensorHeight = overlayData.fi.height;
+			}
+			if (overlayData.mmac != null) {
+				measuredMin = overlayData.mmac.min;
+				measuredMax = overlayData.mmac.max;
+				measuredCenter = overlayData.mmac.center;
+				minX = overlayData.mmac.min_x;
+				minY = overlayData.mmac.min_y;
+				maxX = overlayData.mmac.max_x;
+				maxY = overlayData.mmac.max_y;
+			}
+		}
+		float[] thermalRange = settingsTherm == null ? null : settingsTherm.getRange();
+		boundMin = thermalRange != null && thermalRange.length > 1 ? thermalRange[0] : rangeMin;
+		boundMax = thermalRange != null && thermalRange.length > 1 ? thermalRange[1] : rangeMax;
+		if (!Float.isFinite(rangeMin)) rangeMin = 0.0f;
+		if (!Float.isFinite(rangeMax) || rangeMax <= rangeMin) rangeMax = rangeMin + 1.0f;
+		if (!Float.isFinite(boundMin) || boundMin > rangeMin) boundMin = (float)Math.floor(rangeMin);
+		if (!Float.isFinite(boundMax) || boundMax < rangeMax || boundMax - boundMin > 100000.0f)
+			boundMax = (float)Math.ceil(rangeMax);
+		if (boundMax <= boundMin) boundMax = boundMin + 1.0f;
+
+		SharedPreferences main = getSharedPreferences("PREFS", MODE_PRIVATE);
+		SharedPreferences measure = getSharedPreferences("PREFS_MEASURE", MODE_PRIVATE);
+		SharedPreferences palette = getSharedPreferences("PREFS_PALETTE", MODE_PRIVATE);
+		SharedPreferences therm = getSharedPreferences("PREFS_THERM", MODE_PRIVATE);
+		float[][] thermRanges = settingsTherm == null ? null : settingsTherm.thermal_ranges;
+		boolean thermAvailable = thermRanges != null && thermRanges.length > 0;
+		int batteryPercent = batteryScale > 0 ?
+				Math.max(0, Math.min(100, batteryLevel * 100 / batteryScale)) : 0;
+
+		StringBuilder json = new StringBuilder(chartState.length() + 1500);
+		json.append(chartState, 0, chartState.length() - 1)
+				.append(",\"cameraGeneration\":").append(connectGeneration)
+				.append(",\"cameraFrameSequence\":").append(webFrameSequence)
+				.append(",\"cameraConnected\":").append(
+						usbConnection != null && acceptCameraSettings && !disconnecting)
+				.append(",\"paletteIndex\":").append(palette.getInt("palette", 6))
+				.append(",\"rangeLocked\":").append(rangeLocked)
+				.append(",\"rangeMin\":").append(webFloat(rangeMin, 0.0f))
+				.append(",\"rangeMax\":").append(webFloat(rangeMax, 100.0f))
+				.append(",\"rangeBoundMin\":").append(webFloat(boundMin, -20.0f))
+				.append(",\"rangeBoundMax\":").append(webFloat(boundMax, 150.0f))
+				.append(",\"mirror\":").append(mirror)
+				.append(",\"overlay\":{")
+				.append("\"sensorWidth\":").append(sensorWidth)
+				.append(",\"sensorHeight\":").append(sensorHeight)
+				.append(",\"rotate90\":").append(rotate90)
+				.append(",\"rotate\":").append(rotate)
+				.append(",\"mirror\":").append(mirror)
+				.append(",\"scale\":").append(webFloat(webScale, 1.0f))
+				.append(",\"unit\":").append(tempUnit)
+				.append(",\"showMin\":").append(showMin)
+				.append(",\"showMax\":").append(showMax)
+				.append(",\"showCenter\":").append(showCenter)
+				.append(",\"showPalette\":").append(showPalette)
+				.append(",\"min\":").append(webFloat(measuredMin, 0.0f))
+				.append(",\"max\":").append(webFloat(measuredMax, 0.0f))
+				.append(",\"center\":").append(webFloat(measuredCenter, 0.0f))
+				.append(",\"minX\":").append(minX).append(",\"minY\":").append(minY)
+				.append(",\"maxX\":").append(maxX).append(",\"maxY\":").append(maxY)
+				.append('}')
+				.append(",\"battery\":{\"level\":").append(batteryPercent)
+				.append(",\"charging\":").append(batteryCharging)
+				.append(",\"visible\":").append(batteryVisible).append('}')
+				.append(",\"measurement\":{")
+				.append("\"showcenter\":").append(measure.getBoolean("showcenter", true))
+				.append(",\"showmax\":").append(measure.getBoolean("showmax", true))
+				.append(",\"showmin\":").append(measure.getBoolean("showmin", true))
+				.append(",\"showpalette\":").append(measure.getBoolean("showpalette", true)).append('}');
+		json.append(",\"thermometry\":{")
+				.append("\"available\":").append(thermAvailable)
+				.append(",\"emissivity\":").append(webFloat(
+						therm.getInt("emissivity", 95) / 100.0f, 0.95f))
+				.append(",\"temp_reflected\":").append(webFloat(
+						therm.getInt("temp_reflected", 200) / 10.0f, 20.0f))
+				.append(",\"temp_air\":").append(webFloat(
+						therm.getInt("temp_air", 200) / 10.0f, 20.0f))
+				.append(",\"humidity\":").append(therm.getInt("humidity", 50))
+				.append(",\"distance\":").append(therm.getInt("distance", 1))
+				.append(",\"correction\":").append(webFloat(
+						therm.getInt("correction", 0) / 10.0f, 0.0f))
+				.append(",\"apply_correction_local\":").append(
+						therm.getBoolean("apply_correction_local", true))
+				.append(",\"range\":").append(therm.getInt("range", 0))
+				.append(",\"ranges\":[");
+		if (thermRanges != null) {
+			for (int i = 0; i < thermRanges.length; ++i) {
+				if (i != 0) json.append(',');
+				float[] thermalRangeItem = thermRanges[i];
+				if (thermalRangeItem == null || thermalRangeItem.length < 2) {
+					json.append("[0,0]");
+				} else {
+					json.append('[').append(webFloat(thermalRangeItem[0], 0.0f)).append(',')
+							.append(webFloat(thermalRangeItem[1], 0.0f)).append(']');
+				}
+			}
+		}
+		json.append("]}")
+				.append(",\"settings\":{")
+				.append("\"minshutinterval\":").append(main.getInt("minshutinterval", 7500))
+				.append(",\"maxshutinterval\":").append(main.getInt("maxshutinterval", 180))
+				.append(",\"overtemplock\":").append(main.getBoolean("overtemplock", true))
+				.append(",\"smartcalibration\":").append(main.getBoolean("smartcalibration", true))
+				.append(",\"rotate180\":").append(main.getBoolean("rotate180", false))
+				.append(",\"mirror\":").append(main.getBoolean("mirror", false))
+				.append(",\"imode\":").append(main.getInt("imode", 1))
+				.append(",\"sharpening\":").append(webFloat(main.getInt("sharpening", 20) / 100.0f, 0.2f))
+				.append(",\"recordaudio\":").append(main.getBoolean("recordaudio", true))
+				.append(",\"fullscreen\":").append(main.getBoolean("fullscreen", true))
+				.append(",\"hide_navigation\":").append(main.getBoolean("hide_navigation", true))
+				.append(",\"keep_screen_on\":").append(main.getBoolean("keep_screen_on", true))
+				.append(",\"show_bat_level\":").append(main.getBoolean("show_bat_level", true))
+				.append(",\"swap_controls\":").append(main.getBoolean("swap_controls", false))
+				.append(",\"pic_type\":").append(main.getInt("pic_type", 0))
+				.append(",\"pic_quality\":").append(main.getInt("pic_quality", 100))
+				.append(",\"pic_res\":").append(main.getInt("pic_res", 6))
+				.append(",\"vid_res\":").append(main.getInt("vid_res", 6))
+				.append(",\"orientation\":").append(main.getInt("orientation", 0))
+				.append(",\"unit\":").append(main.getInt("unit", 0))
+				.append(",\"chart_sample_rate\":").append(webFloat(
+						main.getFloat("chart_sample_rate", 0.1f), 0.1f))
+				.append(",\"export_chart_separately\":").append(
+						main.getBoolean("export_chart_separately", false))
+				.append("},\"paletteColors\":[");
+		int[] paletteMap = settingsPalette == null ? null : settingsPalette.paletteMap;
+		if (paletteMap != null && paletteMap.length > 0) {
+			final int samples = 32;
+			for (int i = 0; i <= samples; ++i) {
+				if (i != 0) json.append(',');
+				appendWebColor(json, paletteMap[(paletteMap.length - 1) * i / samples]);
+			}
+		}
+		json.append("]}");
+		return json.toString();
 	}
 
 	/** Open the completed recording directly from MediaStore so large MP4 files are streamed. */
@@ -1089,35 +1214,66 @@ public class MainActivity extends BaseActivity {
 		} else if (timeChartState == 1) {
 			timeChartState = 2;
 			timeChart.stop();
+			setVideoPausedForChart(true);
 			buttonTimeChart.setColorFilter(Color.YELLOW);
 		} else {
-			timeChartState = 0;
-			timeChart.setVisibility(View.GONE);
-			buttonTimeChart.setColorFilter(null);
-			updateTimeChartLayout();
+			timeChartState = 1;
+			timeChart.resume();
+			setVideoPausedForChart(false);
+			buttonTimeChart.setColorFilter(Color.RED);
 		}
+	}
+
+	private void setVideoPausedForChart(boolean paused) {
+		if (paused) {
+			recorder.pause();
+			chartRecorder.pause();
+		} else {
+			pauseRecordingAfterFrame = false;
+			recorder.resume();
+			chartRecorder.resume();
+		}
+	}
+
+	private void deleteTimeChart() {
+		if (timeChartState == 0 || timeChart == null)
+			return;
+		timeChartState = 0;
+		setVideoPausedForChart(false);
+		timeChart.clear();
+		timeChart.setVisibility(View.GONE);
+		buttonTimeChart.setColorFilter(null);
+		updateTimeChartLayout();
 	}
 
 	private int dp(float value) {
 		return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
 	}
 
-	/** Keep the chart and camera in separate vertical regions. */
+	/** Keep the chart and camera in separate regions for every window shape. */
 	private void updateTimeChartLayout() {
 		if (cameraContainer == null)
 			return;
 		boolean landscape = getResources().getConfiguration().orientation ==
 				Configuration.ORIENTATION_LANDSCAPE;
+		int displayRotation = ((WindowManager) getSystemService(Context.WINDOW_SERVICE))
+				.getDefaultDisplay().getRotation();
+		boolean physicalPortrait = displayRotation == Surface.ROTATION_0 ||
+				displayRotation == Surface.ROTATION_180;
+		boolean sideBySide = timeChartState != 0 && (landscape || isInMultiWindowMode());
+		/* In a portrait phone's top/bottom split the window is short. Put the chart
+		 * on the left and the camera on the right; a physically landscape phone keeps
+		 * the established camera-left/chart-right order. */
+		boolean chartOnLeft = sideBySide && isInMultiWindowMode() && physicalPortrait;
 		if (timeChart != null) {
 			ConstraintLayout.LayoutParams chartParams =
 					(ConstraintLayout.LayoutParams) timeChart.getLayoutParams();
-			if (landscape && timeChartState != 0) {
-				/* In landscape the chart is a right-hand pane, not a bottom strip. */
+			if (sideBySide) {
 				chartParams.width = 0;
 				chartParams.height = 0;
 				chartParams.startToStart = ConstraintLayout.LayoutParams.UNSET;
-				chartParams.startToEnd = R.id.cameraContainer;
-				chartParams.endToStart = R.id.buttonsRight;
+				chartParams.startToEnd = chartOnLeft ? R.id.buttonsLeft : R.id.cameraContainer;
+				chartParams.endToStart = chartOnLeft ? R.id.cameraContainer : R.id.buttonsRight;
 				chartParams.endToEnd = ConstraintLayout.LayoutParams.UNSET;
 				chartParams.topToTop = R.id.mainLayout;
 				chartParams.bottomToBottom = R.id.mainLayout;
@@ -1143,12 +1299,17 @@ public class MainActivity extends BaseActivity {
 		}
 		ConstraintLayout.LayoutParams cameraParams =
 				(ConstraintLayout.LayoutParams) cameraContainer.getLayoutParams();
-		if (landscape && timeChartState != 0) {
+		if (sideBySide) {
 			cameraParams.width = 0;
 			cameraParams.height = 0;
-			cameraParams.startToStart = R.id.mainLayout;
-			cameraParams.endToStart = R.id.timeChart;
-			cameraParams.endToEnd = ConstraintLayout.LayoutParams.UNSET;
+			cameraParams.startToStart = chartOnLeft ?
+					ConstraintLayout.LayoutParams.UNSET : R.id.mainLayout;
+			cameraParams.startToEnd = chartOnLeft ? R.id.timeChart :
+					ConstraintLayout.LayoutParams.UNSET;
+			cameraParams.endToStart = chartOnLeft ? ConstraintLayout.LayoutParams.UNSET :
+					R.id.timeChart;
+			cameraParams.endToEnd = chartOnLeft ? R.id.mainLayout :
+					ConstraintLayout.LayoutParams.UNSET;
 			cameraParams.topToTop = R.id.mainLayout;
 			cameraParams.bottomToBottom = R.id.mainLayout;
 			cameraParams.bottomMargin = 0;
@@ -1170,6 +1331,12 @@ public class MainActivity extends BaseActivity {
 			cameraParams.rightMargin = 0;
 		}
 		cameraContainer.setLayoutParams(cameraParams);
+		/* With a portrait chart the camera rises to the top control row. Keep the
+		 * palette maximum at the image edge and move the compact control strip just
+		 * far enough left that the two never overlap. */
+		if (buttonsLeft != null)
+			buttonsLeft.setTranslationX(!sideBySide && !landscape && timeChartState != 0 ?
+					-dp(48) : 0);
 		/* setLayoutParams() can refresh ConstraintLayout's child order.  Keep the
 		 * bottom controls above the chart after every such refresh. */
 		if (buttonsLeft != null)
@@ -1223,23 +1390,12 @@ public class MainActivity extends BaseActivity {
 				new SurfaceMuxer.InputSurface(surfaceMuxer));
 		overlayPicture = new Overlay(this,
 				new SurfaceMuxer.InputSurface(surfaceMuxer));
-		overlayWeb = new Overlay(this,
-				new SurfaceMuxer.InputSurface(surfaceMuxer));
-		outWeb = new SurfaceMuxer.OutputSurface(surfaceMuxer, null, 640, 480);
+		/* Resized to the connected camera's actual oriented FrameInfo dimensions
+		 * before the first Web frame is captured. */
+		outWeb = new SurfaceMuxer.OutputSurface(surfaceMuxer, null, 1, 1);
 		webViewServer = new WebViewServer(this);
 		webViewServer.setCommandHandler(this::handleWebCommand);
-		webViewServer.setStateProvider((generation, from) -> {
-			TimeChartView chart = timeChart;
-			if (chart == null)
-				return "{\"state\":0,\"recording\":false,\"videoRecording\":false," +
-						"\"generation\":0,\"reset\":true,\"from\":0,\"count\":0," +
-						"\"intervalNs\":100000000,\"unit\":0,\"showMax\":false," +
-						"\"showMin\":false,\"showCenter\":false,\"exportSeparately\":false," +
-						"\"imageType\":2,\"imageQuality\":92,\"max\":[],\"min\":[]," +
-						"\"center\":[]}";
-			return chart.getWebStateJson(timeChartState, generation, from,
-					exportChartSeparately, imgType, imgQuality, recorder.isRecording());
-		});
+		webViewServer.setStateProvider(this::buildWebStateJson);
 		webViewServer.setVideoProvider(this::openWebVideo);
 
 		/* We use it later. */
@@ -1346,6 +1502,10 @@ public class MainActivity extends BaseActivity {
 		cameraContainer = findViewById(R.id.cameraContainer);
 		buttonTimeChart = findViewById(R.id.buttonTimeChart);
 		buttonTimeChart.setOnClickListener(view -> toggleTimeChart());
+		buttonTimeChart.setOnLongClickListener(view -> {
+			deleteTimeChart();
+			return true;
+		});
 
 		ImageButton buttonPalette = findViewById(R.id.buttonPalette);
 		buttonPalette.setOnClickListener(view -> {
@@ -1359,38 +1519,8 @@ public class MainActivity extends BaseActivity {
 		});
 
 		ImageButton buttonLock = findViewById(R.id.buttonLock);
-			buttonLock.setOnClickListener(view -> {
-			synchronized (frameLock) {
-				if (isNaN(overlayData.rangeMin) && isNaN(overlayData.rangeMax)) { //range is not set
-					if (overlayData.mmac == null || isNaN(overlayData.mmac.min) ||
-							isNaN(overlayData.mmac.max)) {
-						messageView.showMessage(R.string.msg_no_frame);
-						return;
-					}
-					overlayData.rangeMin = overlayData.mmac.min;
-					overlayData.rangeMax = overlayData.mmac.max;
-					buttonLock.setImageResource(R.drawable.ic_baseline_lock_24);
-					rangeSlider.setVisibility(View.VISIBLE);
-					float start = settingsTherm.getRange()[0];
-					float end = settingsTherm.getRange()[1];
-					if (overlayData.rangeMin < start)
-						start = (float) floor(overlayData.rangeMin);
-					if (overlayData.rangeMax > end)
-						end = (float) ceil(overlayData.rangeMax);
-					if (isNaN(overlayData.rangeMin) || isInfinite(overlayData.rangeMin))
-						overlayData.rangeMin = start;
-					if (isNaN(overlayData.rangeMax) || isInfinite(overlayData.rangeMax))
-						overlayData.rangeMax = end;
-					rangeSlider.setValueFrom(start);
-					rangeSlider.setValueTo(end);
-					rangeSlider.setValues(overlayData.rangeMin, overlayData.rangeMax);
-				} else {
-					overlayData.rangeMin = overlayData.rangeMax = NaN;
-					buttonLock.setImageResource(R.drawable.ic_baseline_lock_open_24);
-					rangeSlider.setVisibility(View.GONE);
-				}
-			}
-		});
+		buttonLock.setOnClickListener(view -> setPaletteLocked(
+				!Float.isFinite(overlayData.rangeMin) || !Float.isFinite(overlayData.rangeMax)));
 
 		rangeSlider = findViewById(R.id.rangeSlider);
 		rangeSlider.setStepSize(1.0f);
@@ -1398,9 +1528,11 @@ public class MainActivity extends BaseActivity {
 			List<Float> v = rangeSlider.getValuesCorrected();
 			if (v.size() < 2 || !fromUser)
 				return;
-			if (value == slider.getValues().get(0))
+			synchronized (frameLock) {
 				overlayData.rangeMin = v.get(0);
-			else overlayData.rangeMax = v.get(1);
+				overlayData.rangeMax = v.get(1);
+			}
+			settingsPalette.setManualValues(v.get(0), v.get(1));
 		});
 
 		ImageButton buttonVideo = findViewById(R.id.buttonVideo);
@@ -1494,6 +1626,8 @@ public class MainActivity extends BaseActivity {
 			/* Reconnect only after every EGL surface has been restored. Starting the USB
 			 * connect thread from onStart() races with init() when returning from background. */
 			usbMonitor.scan();
+			if (usbConnection == null && !usbConnectionPending)
+				scheduleReconnect(750);
 		} catch (RuntimeException e) {
 			renderingEnabled = false;
 			Log.e("inficam", "Unable to restore graphics context", e);
@@ -1563,21 +1697,25 @@ public class MainActivity extends BaseActivity {
 			return;
 		WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
 		orientation = wm.getDefaultDisplay().getRotation();
+		boolean physicalPortrait = orientation == Surface.ROTATION_0 ||
+				orientation == Surface.ROTATION_180;
 		boolean landscapeLayout = getResources().getConfiguration().orientation ==
-				Configuration.ORIENTATION_LANDSCAPE;
+				Configuration.ORIENTATION_LANDSCAPE || isInMultiWindowMode();
+		/* Controls follow the available split-window shape, while the thermal image
+		 * rotation must always follow the physical display orientation. */
+		thruSurface.rotate90 = physicalPortrait;
 		ConstraintLayout.LayoutParams rlp = (ConstraintLayout.LayoutParams) rangeSlider.getLayoutParams();
 		if (!landscapeLayout) {
-			thruSurface.rotate90 = true;
 			buttonsLeft.setOrientation(LinearLayout.HORIZONTAL);
 			buttonsRight.setOrientation(LinearLayout.HORIZONTAL);
-			/* Recreate these params instead of reusing a portrait/landscape params object;
-			 * Android can retain the previous zero height when the activity is resumed. */
-			buttonsLeftLayout = new ConstraintLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-					ViewGroup.LayoutParams.WRAP_CONTENT);
-			buttonsRightLayout = new ConstraintLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-					ViewGroup.LayoutParams.WRAP_CONTENT);
-			/* Both horizontal edges are constrained; 0dp lets ConstraintLayout resolve the
-			 * available width reliably after a reconnect/configuration change. */
+			/* Keep the panels' measured child size. A 0dp horizontal LinearLayout whose
+			 * children are wider than the window can be resolved as 0x0 by ConstraintLayout
+			 * on some OEM builds after a configuration change. WRAP_CONTENT plus a maximum
+			 * width avoids that failure; the panel is scaled to fit below when necessary. */
+			buttonsLeftLayout = new ConstraintLayout.LayoutParams(
+					ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+			buttonsRightLayout = new ConstraintLayout.LayoutParams(
+					ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
 			buttonsLeftLayout.topToTop = R.id.mainLayout;
 			buttonsLeftLayout.bottomToBottom = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeftLayout.topToBottom = ConstraintLayout.LayoutParams.UNSET;
@@ -1585,19 +1723,30 @@ public class MainActivity extends BaseActivity {
 			buttonsLeftLayout.rightToRight = R.id.mainLayout;
 			buttonsLeftLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeftLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
-			buttonsRightLayout.width = ViewGroup.LayoutParams.WRAP_CONTENT;
-			buttonsRightLayout.height = ViewGroup.LayoutParams.WRAP_CONTENT;
 			buttonsRightLayout.topToTop = ConstraintLayout.LayoutParams.UNSET;
 			buttonsRightLayout.bottomToBottom = R.id.mainLayout;
 			buttonsRightLayout.bottomToTop = ConstraintLayout.LayoutParams.UNSET;
-			buttonsRightLayout.leftToLeft = ConstraintLayout.LayoutParams.UNSET;
-			buttonsRightLayout.rightToRight = ConstraintLayout.LayoutParams.UNSET;
-			buttonsRightLayout.startToStart = R.id.mainLayout;
-			buttonsRightLayout.endToEnd = R.id.mainLayout;
+			buttonsRightLayout.leftToLeft = R.id.mainLayout;
+			buttonsRightLayout.rightToRight = R.id.mainLayout;
+			buttonsRightLayout.startToStart = ConstraintLayout.LayoutParams.UNSET;
+			buttonsRightLayout.endToEnd = ConstraintLayout.LayoutParams.UNSET;
 			buttonsLeft.setLayoutParams(buttonsLeftLayout);
 			buttonsRight.setLayoutParams(buttonsRightLayout);
-			buttonsLeft.setLayoutParams(buttonsLeftLayout);
-			buttonsRight.setLayoutParams(buttonsRightLayout);
+			buttonsLeft.setScaleX(1.0f);
+			buttonsLeft.setScaleY(1.0f);
+			buttonsRight.setScaleX(1.0f);
+			buttonsRight.setScaleY(1.0f);
+			buttonsRight.post(() -> {
+				int available = ((View) buttonsRight.getParent()).getWidth();
+				int measured = buttonsRight.getMeasuredWidth();
+				if (available > 0 && measured > available) {
+					float scale = (float) available / measured;
+					buttonsRight.setPivotX(measured * 0.5f);
+					buttonsRight.setPivotY(buttonsRight.getMeasuredHeight());
+					buttonsRight.setScaleX(scale);
+					buttonsRight.setScaleY(scale);
+				}
+			});
 			buttonsLeft.setGravity(Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM);
 			buttonsRight.setGravity(Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM);
 			rlp.rightToLeft = ConstraintLayout.LayoutParams.UNSET;
@@ -1614,9 +1763,12 @@ public class MainActivity extends BaseActivity {
 			rangeSlider.setLayoutParams(rlp);
 			rangeSlider.setVertical(false);
 		} else {
-			thruSurface.rotate90 = false;
 			buttonsLeft.setOrientation(LinearLayout.VERTICAL);
 			buttonsRight.setOrientation(LinearLayout.VERTICAL);
+			buttonsLeft.setScaleX(1.0f);
+			buttonsLeft.setScaleY(1.0f);
+			buttonsRight.setScaleX(1.0f);
+			buttonsRight.setScaleY(1.0f);
 			/* Recreate both side panels for landscape.  Reusing the portrait
 			 * params leaves a zero height after a rotation, which clips all icons. */
 			buttonsLeftLayout = new ConstraintLayout.LayoutParams(
@@ -1691,6 +1843,17 @@ public class MainActivity extends BaseActivity {
 			handler.post(this::updateOrientation);
 	}
 
+	@Override
+	public void onMultiWindowModeChanged(boolean isInMultiWindowMode,
+			@NonNull Configuration newConfig) {
+		super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig);
+		/* Fixed portrait/landscape requests can make some OEM launchers reject a
+		 * top/bottom split. The saved preference is restored after leaving split. */
+		setRequestedOrientation(isInMultiWindowMode ?
+				ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED : preferredScreenOrientation);
+		handler.post(this::updateOrientation);
+	}
+
 	private void hideSettingsDialog() {
 		boolean wasThermDialog = activeSettingsDialog == settingsTherm;
 		activeSettingsDialog = null;
@@ -1744,6 +1907,8 @@ public class MainActivity extends BaseActivity {
 			buttonShare.setColorFilter(null);
 		}
 		connectGeneration++;
+		if (webViewServer != null)
+			webViewServer.resetFrames();
 		setCalibrationUi(false);
 		overTempLockoutActive = false;
 		stopRecording();
@@ -1790,25 +1955,20 @@ public class MainActivity extends BaseActivity {
 	}
 
 	private void startRecording(boolean recordAudio) {
-		startRecording(recordAudio, false);
-	}
-
-	/** Web exports use the thermal sensor's native image size; CSS handles browser scaling. */
-	private void startRecording(boolean recordAudio, boolean nativeCameraResolution) {
 		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
 			askPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE, granted -> {
 				if (!granted)
 					messageView.showMessage(R.string.msg_permdenied_storage);
-				else _startRecording(recordAudio, nativeCameraResolution);
+				else _startRecording(recordAudio);
 			});
-		} else _startRecording(recordAudio, nativeCameraResolution);
+		} else _startRecording(recordAudio);
 	}
 
 	/* Request audio permission first when necessary! */
-	private void _startRecording(boolean recordAudio, boolean nativeCameraResolution) {
+	private void _startRecording(boolean recordAudio) {
 		try {
-			int w = nativeCameraResolution ? infiCam.getWidth() : vidWidth;
-			int h = nativeCameraResolution ? infiCam.getHeight() : vidHeight;
+			int w = vidWidth;
+			int h = vidHeight;
 			if (w <= 0 || h <= 0)
 				throw new IOException("Camera frame size is not available");
 			if (orientation == Surface.ROTATION_0 || orientation == Surface.ROTATION_180) {
@@ -1832,6 +1992,7 @@ public class MainActivity extends BaseActivity {
 				outChartRecord = new SurfaceMuxer.OutputSurface(surfaceMuxer, chartSurface);
 				outChartRecord.setSize(chartWidth, chartHeight);
 			}
+			pauseRecordingAfterFrame = timeChartState == 2;
 			ImageButton buttonVideo = findViewById(R.id.buttonVideo);
 			buttonVideo.setColorFilter(Color.RED);
 		} catch (IOException e) {
@@ -1860,6 +2021,7 @@ public class MainActivity extends BaseActivity {
 			outChartRecord = null;
 		}
 		recordChartSeparately = false;
+		pauseRecordingAfterFrame = false;
 	}
 
 	public void updateBatLevel(Intent batteryStatus) {
@@ -1868,8 +2030,11 @@ public class MainActivity extends BaseActivity {
 				status == BatteryManager.BATTERY_STATUS_FULL;
 		int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
 		int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+		if (scale > 0) batteryScale = scale;
+		if (level >= 0) batteryLevel = level;
+		batteryCharging = isCharging;
 		BatteryLevel batLevel = findViewById(R.id.batLevel);
-		batLevel.setLevel(scale, level, isCharging);
+		batLevel.setLevel(batteryScale, batteryLevel, isCharging);
 	}
 
 	/*
@@ -1901,6 +2066,7 @@ public class MainActivity extends BaseActivity {
 	}
 
 	public void setShowBatLevel(boolean value) {
+		batteryVisible = value;
 		BatteryLevel batLevel = findViewById(R.id.batLevel);
 		batLevel.setVisibility(value ? View.VISIBLE : View.GONE);
 	}
@@ -1960,11 +2126,7 @@ public class MainActivity extends BaseActivity {
 			overlayData.rangeMin = NaN;
 			overlayData.rangeMax = NaN;
 		}
-		ImageButton lockButton = findViewById(R.id.buttonLock);
-		if (lockButton != null)
-			lockButton.setImageResource(R.drawable.ic_baseline_lock_open_24);
-		if (rangeSlider != null)
-			rangeSlider.setVisibility(View.GONE);
+		updatePaletteRangeUi(false);
 	}
 
 	private void applyManualPaletteRange() {
@@ -1972,11 +2134,65 @@ public class MainActivity extends BaseActivity {
 			overlayData.rangeMin = paletteManualMin;
 			overlayData.rangeMax = paletteManualMax;
 		}
+		updatePaletteRangeUi(true);
+	}
+
+	private void updatePaletteRangeUi(boolean locked) {
 		ImageButton lockButton = findViewById(R.id.buttonLock);
 		if (lockButton != null)
-			lockButton.setImageResource(R.drawable.ic_baseline_lock_open_24);
-		if (rangeSlider != null)
+			lockButton.setImageResource(locked ? R.drawable.ic_baseline_lock_24 :
+					R.drawable.ic_baseline_lock_open_24);
+		if (rangeSlider == null)
+			return;
+		if (!locked) {
 			rangeSlider.setVisibility(View.GONE);
+			return;
+		}
+		float min, max;
+		synchronized (frameLock) {
+			min = overlayData.rangeMin;
+			max = overlayData.rangeMax;
+		}
+		if (!Float.isFinite(min) || !Float.isFinite(max) || max <= min)
+			return;
+		float[] cameraRange = settingsTherm == null ? null : settingsTherm.getRange();
+		float start = cameraRange != null && cameraRange.length > 1 ? cameraRange[0] : min;
+		float end = cameraRange != null && cameraRange.length > 1 ? cameraRange[1] : max;
+		if (!Float.isFinite(start) || start > min) start = (float)Math.floor(min);
+		if (!Float.isFinite(end) || end < max || end - start > 100000.0f)
+			end = (float)Math.ceil(max);
+		if (end <= start) end = start + 1.0f;
+		rangeSlider.setValueFrom(start);
+		rangeSlider.setValueTo(end);
+		rangeSlider.setValues(min, max);
+		rangeSlider.setVisibility(View.VISIBLE);
+	}
+
+	private void setPaletteLocked(boolean locked) {
+		if (!locked) {
+			settingsPalette.setAutoRangeMode();
+			return;
+		}
+		float min, max;
+		synchronized (frameLock) {
+			if (overlayData.mmac == null || !Float.isFinite(overlayData.mmac.min) ||
+					!Float.isFinite(overlayData.mmac.max)) {
+				messageView.showMessage(R.string.msg_no_frame);
+				return;
+			}
+			min = overlayData.mmac.min;
+			max = overlayData.mmac.max;
+		}
+		setManualPaletteRange(min, max);
+	}
+
+	private void setManualPaletteRange(float min, float max) {
+		if (!Float.isFinite(min) || !Float.isFinite(max) || max <= min)
+			return;
+		paletteManualMin = min;
+		paletteManualMax = max;
+		settingsPalette.setManualValues(min, max);
+		applyManualPaletteRange();
 	}
 
 	private void showPaletteRangePopup() {
@@ -2044,7 +2260,9 @@ public class MainActivity extends BaseActivity {
 	}
 
 	public void setOrientation(int i) {
-		setRequestedOrientation(i);
+		preferredScreenOrientation = i;
+		setRequestedOrientation(isInMultiWindowMode() ?
+				ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED : i);
 		updateOrientation();
 	}
 

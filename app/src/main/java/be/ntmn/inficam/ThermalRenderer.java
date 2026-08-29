@@ -27,9 +27,6 @@ public class ThermalRenderer {
 	private final float speed;
 	private float phase = 0f; //animation X offset
 	private final Paint barberPaint = new Paint();
-	public long lastPaletteNs = 0;
-	public long lastLockCanvasNs = 0;
-	public long lastUnlockCanvasNs = 0;
 
 	ThermalRenderer(int width, int height){
 		this.width = width;
@@ -114,22 +111,16 @@ public class ThermalRenderer {
 							float range_min,
 							float range_max,
 							float sensor_max){
-		long startNs = System.nanoTime();
 		applyPaletteMap(paletteMap,temp,range_min,range_max,sensor_max);
-		lastPaletteNs = System.nanoTime() - startNs;
 
-		startNs = System.nanoTime();
 		Canvas canvas = surface.lockCanvas(null);
-		lastLockCanvasNs = System.nanoTime() - startNs;
 		try {
 			drawFrame(canvas,canvas.getWidth(),canvas.getHeight());
 			frameBitmap.setPixels(canvasDrawBuffer, 0, width, 0, 0, width, height);
 			dstRect.set(0, 0, canvas.getWidth(), canvas.getHeight());
 			canvas.drawBitmap(frameBitmap, null, dstRect, null);
 		} finally {
-			startNs = System.nanoTime();
 			surface.unlockCanvasAndPost(canvas);
-			lastUnlockCanvasNs = System.nanoTime() - startNs;
 		}
 	}
 

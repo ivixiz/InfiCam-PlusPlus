@@ -58,7 +58,27 @@ public final class TimeChartView extends View {
 		invalidate();
 	}
 
-	public synchronized void stop() { recording = false; }
+	public synchronized void stop() {
+		recording = false;
+		invalidate();
+	}
+
+	/** Continue the current series. Paused wall-clock time is intentionally omitted. */
+	public synchronized void resume() {
+		lastSampleNs = 0;
+		recording = true;
+		invalidate();
+	}
+
+	/** Delete the current series without allocating new sample buffers. */
+	public synchronized void clear() {
+		sampleCount = 0;
+		lastSampleNs = 0;
+		recording = false;
+		dataGeneration++;
+		invalidate();
+	}
+
 	public synchronized boolean isRecording() { return recording; }
 
 	/** Capture the currently visible chart for inclusion in a saved photo. */
@@ -68,7 +88,8 @@ public final class TimeChartView extends View {
 			return null;
 		Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
 		Canvas canvas = new Canvas(bitmap);
-		draw(canvas);
+		canvas.drawColor(Color.WHITE);
+		drawChart(canvas);
 		return bitmap;
 	}
 
@@ -100,7 +121,9 @@ public final class TimeChartView extends View {
 				.append(",\"showCenter\":").append(showCenter)
 				.append(",\"exportSeparately\":").append(exportSeparately)
 				.append(",\"imageType\":").append(imageType)
-				.append(",\"imageQuality\":").append(imageQuality);
+				.append(",\"imageQuality\":").append(imageQuality)
+				.append(",\"viewWidth\":").append(getWidth())
+				.append(",\"viewHeight\":").append(getHeight());
 		appendJsonArray(json, "max", maxValues, from, visibleCount);
 		appendJsonArray(json, "min", minValues, from, visibleCount);
 		appendJsonArray(json, "center", centerValues, from, visibleCount);
@@ -193,6 +216,12 @@ public final class TimeChartView extends View {
 
 	@Override protected synchronized void onDraw(Canvas canvas) {
 		super.onDraw(canvas);
+		drawChart(canvas);
+		if (!recording)
+			drawPausedOverlay(canvas);
+	}
+
+	private void drawChart(Canvas canvas) {
 		int w = getWidth(), h = getHeight();
 		if (w < 80 || h < 60 || sampleCount == 0)
 			return;
@@ -300,6 +329,30 @@ public final class TimeChartView extends View {
 			canvas.drawText(s, legendX, legendY, textPaint); legendX += textPaint.measureText(s) + 18; }
 		if (showCenter) { textPaint.setColor(Color.rgb(220, 170, 0));
 			canvas.drawText("Temperature" + suffix, legendX, legendY, textPaint); }
+	}
+
+	private void drawPausedOverlay(Canvas canvas) {
+		int width = getWidth(), height = getHeight();
+		if (width <= 0 || height <= 0)
+			return;
+		paint.setStyle(Paint.Style.FILL);
+		paint.setColor(Color.argb(145, 0, 0, 0));
+		canvas.drawRect(0, 0, width, height, paint);
+
+		float oldSize = textPaint.getTextSize();
+		Paint.Align oldAlign = textPaint.getTextAlign();
+		int oldColor = textPaint.getColor();
+		textPaint.setTextSize(Math.max(oldSize, getResources().getDisplayMetrics().scaledDensity * 16));
+		textPaint.setTextAlign(Paint.Align.CENTER);
+		textPaint.setColor(Color.WHITE);
+		float spacing = textPaint.getTextSize() * 1.45f;
+		float firstBaseline = height * .5f - spacing;
+		canvas.drawText("Stopped", width * .5f, firstBaseline, textPaint);
+		canvas.drawText("Click to continue", width * .5f, firstBaseline + spacing, textPaint);
+		canvas.drawText("Hold to delete", width * .5f, firstBaseline + spacing * 2, textPaint);
+		textPaint.setTextSize(oldSize);
+		textPaint.setTextAlign(oldAlign);
+		textPaint.setColor(oldColor);
 	}
 
 	private void drawSeries(Canvas canvas, float[] values, int color, float lo, float hi,

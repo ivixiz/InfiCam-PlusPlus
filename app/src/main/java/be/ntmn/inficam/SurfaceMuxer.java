@@ -405,8 +405,9 @@ public class SurfaceMuxer {
 				result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
 			}
 			makeCurrent();
-			GLES20.glFlush();
-			GLES20.glFinish();
+			/* glReadPixels is itself a synchronous readback of all preceding commands.
+			 * A separate glFinish() stalls the render thread twice, which is especially
+			 * noticeable while Web Control captures every camera frame. */
 			readBuffer.clear();
 			GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA,
 					GLES20.GL_UNSIGNED_BYTE, readBuffer);

@@ -13,7 +13,35 @@
       text-align: center;
       font-family: sans-serif;
     }
-    h3 { margin: 10px 0 8px; }
+    header {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      min-height: 38px;
+    }
+    h3 { margin: 8px 0 6px; }
+    #battery { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+    #battery-case {
+      position: relative;
+      width: 31px;
+      height: 15px;
+      padding: 2px;
+      border: 2px solid #eee;
+      border-radius: 3px;
+    }
+    #battery-case::after {
+      content: '';
+      position: absolute;
+      right: -5px;
+      top: 3px;
+      width: 3px;
+      height: 7px;
+      border-radius: 0 2px 2px 0;
+      background: #eee;
+    }
+    #battery-fill { width: 0; height: 100%; background: #4cd964; transition: width .2s; }
+    #battery-charge { display: none; color: #ffd400; font-size: 15px; line-height: 1; }
     #viewer {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
@@ -25,14 +53,28 @@
     #viewer.chart-on {
       grid-template-columns: minmax(0, 62fr) minmax(320px, 38fr);
     }
+    #camera-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background: #000;
+    }
     #live {
       display: block;
       width: 100%;
-      height: 100%;
+      height: auto;
       min-width: 0;
       max-height: calc(100vh - 110px);
       object-fit: contain;
       background: #000;
+    }
+    #thermal-overlay {
+      position: absolute;
+      pointer-events: none;
     }
     #chart-wrap {
       display: none;
@@ -42,6 +84,13 @@
     }
     #viewer.chart-on #chart-wrap { display: block; }
     #chart { display: block; width: 100%; height: 100%; }
+    #controls-scroll {
+      width: 100%;
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
+    }
     #controls {
       display: flex;
       flex-wrap: nowrap;
@@ -49,39 +98,213 @@
       justify-content: center;
       align-items: center;
       padding: 8px;
-      overflow-x: auto;
+      width: max-content;
+      min-width: 100%;
     }
-    button { white-space: nowrap; padding: 5px 10px; }
+    button { flex: 0 0 auto; white-space: nowrap; padding: 5px 10px; }
+    button.active { color: #fff; border-color: #d33; background: #8b1a1a; }
+    #palette-range {
+      display: none;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      width: min(96vw, 900px);
+      margin: 0 auto 5px;
+      font-size: 12px;
+    }
+    #palette-range.active { display: flex; }
+    .range-value { flex: 0 0 auto; min-width: 70px; }
+    .dual-range { position: relative; flex: 1 1 auto; min-width: 180px; height: 30px; }
+    #range-track {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 13px;
+      height: 5px;
+      border-radius: 3px;
+      background: #555;
+    }
+    .dual-range input {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 30px;
+      margin: 0;
+      appearance: none;
+      -webkit-appearance: none;
+      pointer-events: none;
+      background: transparent;
+    }
+    .dual-range input::-webkit-slider-runnable-track { height: 5px; background: transparent; }
+    .dual-range input::-webkit-slider-thumb {
+      width: 18px; height: 18px; margin-top: -6px; border: 2px solid #eee;
+      border-radius: 50%; background: #a22; appearance: none; -webkit-appearance: none;
+      pointer-events: auto; cursor: pointer;
+    }
+    .dual-range input::-moz-range-track { height: 5px; background: transparent; }
+    .dual-range input::-moz-range-thumb {
+      width: 16px; height: 16px; border: 2px solid #eee; border-radius: 50%;
+      background: #a22; pointer-events: auto; cursor: pointer;
+    }
+    .modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      padding: 16px;
+      background: rgba(0, 0, 0, .7);
+      align-items: center;
+      justify-content: center;
+    }
+    .modal.open { display: flex; }
+    .modal-card {
+      width: min(94vw, 650px);
+      max-height: 88vh;
+      overflow: auto;
+      padding: 14px;
+      border-radius: 8px;
+      background: #292929;
+      color: #eee;
+      text-align: left;
+    }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .modal-head h3 { margin: 0; }
+    .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 16px; margin-top: 12px; }
+    .settings-grid label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .settings-grid input:not([type=checkbox]), .settings-grid select { width: min(150px, 48%); }
     #status { min-height: 1.2em; margin-bottom: 5px; color: #bbb; font-size: 13px; }
     @media (max-width: 760px) {
       #viewer.chart-on { grid-template-columns: minmax(0, 1fr); }
       #chart-wrap { min-height: 360px; }
+      #controls { justify-content: flex-start; }
+      #palette-range { padding: 0 8px; }
+      .range-value { min-width: 64px; }
+      .settings-grid { grid-template-columns: minmax(0, 1fr); }
     }
   </style>
 </head>
 <body>
-  <h3>InfiCam Web Control</h3>
+  <header>
+    <h3>InfiCam Web Control</h3>
+    <div id="battery" title="Phone battery">
+      <div id="battery-case"><div id="battery-fill"></div></div>
+      <span id="battery-charge">⚡</span><span id="battery-text">--%</span>
+    </div>
+  </header>
   <div id="viewer">
-    <img id="live" src="/stream" alt="Thermal camera stream">
+    <div id="camera-wrap">
+      <img id="live" src="/stream" alt="Thermal camera stream">
+      <canvas id="thermal-overlay"></canvas>
+    </div>
     <div id="chart-wrap"><canvas id="chart"></canvas></div>
   </div>
-  <div id="controls">
-    <button type="button" onclick="sendCommand('palette')">Palette</button>
-    <button type="button" onclick="sendCommand('mirror')">Mirror</button>
-    <button type="button" onclick="sendCommand('calibrate')">Calibrate</button>
-    <button onclick="savePicture()">Save Picture</button>
-    <button id="record" onclick="toggleRecording()">Record Video</button>
+  <div id="controls-scroll">
+    <div id="controls">
+      <button id="palette-button" type="button" onclick="sendCommand('palette')">Palette</button>
+      <button id="lock-button" type="button" onclick="togglePaletteLock()">Lock Range</button>
+      <button id="mirror-button" type="button" onclick="sendCommand('mirror')">Mirror</button>
+      <button type="button" onclick="sendCommand('calibrate')">Calibrate</button>
+      <button type="button" onclick="openModal('settings-modal')">Settings</button>
+      <button id="thermometry-button" type="button" onclick="openModal('thermometry-modal')">Thermometry Settings</button>
+      <button type="button" onclick="openModal('measurement-modal')">Measurement Settings</button>
+      <button onclick="savePicture()">Save Picture</button>
+      <button id="record" onclick="toggleRecording()">Record Video</button>
+    </div>
+  </div>
+  <div id="palette-range">
+    <span class="range-value">Min <span id="range-min-value">--</span></span>
+    <div class="dual-range">
+      <div id="range-track"></div>
+      <input id="range-min" type="range" step="0.1" aria-label="Palette minimum">
+      <input id="range-max" type="range" step="0.1" aria-label="Palette maximum">
+    </div>
+    <span class="range-value">Max <span id="range-max-value">--</span></span>
   </div>
   <div id="status"></div>
+
+  <div id="settings-modal" class="modal" onclick="modalBackdrop(event)">
+    <div class="modal-card">
+      <div class="modal-head"><h3>Settings</h3><button onclick="closeModal('settings-modal')">Close</button></div>
+      <div class="settings-grid">
+        <label>Min shutter interval (ms)<input data-setting="minshutinterval" type="number" min="0" max="10000" step="100"></label>
+        <label>Max shutter interval (s)<input data-setting="maxshutinterval" type="number" min="0" max="1000" step="10"></label>
+        <label>Overtemperature lock<input data-setting="overtemplock" type="checkbox"></label>
+        <label>Smart calibration<input data-setting="smartcalibration" type="checkbox"></label>
+        <label>Rotate 180°<input data-setting="rotate180" type="checkbox"></label>
+        <label>Mirror<input data-setting="mirror" type="checkbox"></label>
+        <label>Interpolation<select data-setting="imode"><option value="0">Nearest</option><option value="1">Linear</option><option value="2">Cubic</option><option value="3">Catmull-Rom</option><option value="4">Adaptive</option></select></label>
+        <label>Sharpening<input data-setting="sharpening" type="number" min="0" max="1" step="0.05"></label>
+        <label>Record audio<input data-setting="recordaudio" type="checkbox"></label>
+        <label>Fullscreen<input data-setting="fullscreen" type="checkbox"></label>
+        <label>Hide navigation<input data-setting="hide_navigation" type="checkbox"></label>
+        <label>Keep screen on<input data-setting="keep_screen_on" type="checkbox"></label>
+        <label>Show battery<input data-setting="show_bat_level" type="checkbox"></label>
+        <label>Swap controls<input data-setting="swap_controls" type="checkbox"></label>
+        <label>Picture format<select data-setting="pic_type"><option value="0">PNG</option><option value="1">PNG RGB565</option><option value="2">JPEG</option></select></label>
+        <label>Picture quality<input data-setting="pic_quality" type="number" min="0" max="100" step="1"></label>
+        <label>Picture resolution<select data-setting="pic_res"><option value="0">320×240</option><option value="1">640×480</option><option value="2">800×600</option><option value="3">1024×768</option><option value="4">1600×1200</option><option value="5">1280×720</option><option value="6">1920×1080</option></select></label>
+        <label>Video resolution<select data-setting="vid_res"><option value="0">320×240</option><option value="1">640×480</option><option value="2">800×600</option><option value="3">1024×768</option><option value="4">1600×1200</option><option value="5">1280×720</option><option value="6">1920×1080</option></select></label>
+        <label>Orientation<select data-setting="orientation"><option value="0">Automatic</option><option value="1">Landscape</option><option value="2">Portrait</option><option value="3">Reverse landscape</option></select></label>
+        <label>Temperature unit<select data-setting="unit"><option value="0">Celsius</option><option value="1">Fahrenheit</option><option value="2">Kelvin</option><option value="3">Rankine</option></select></label>
+        <label>Chart sample rate (s)<input data-setting="chart_sample_rate" type="number" min="0.04" max="1800" step="0.01"></label>
+        <label>Export chart separately<input data-setting="export_chart_separately" type="checkbox"></label>
+      </div>
+    </div>
+  </div>
+
+  <div id="thermometry-modal" class="modal" onclick="modalBackdrop(event)">
+    <div class="modal-card">
+      <div class="modal-head"><h3>Thermometry Settings</h3><button onclick="closeModal('thermometry-modal')">Close</button></div>
+      <div class="settings-grid">
+        <label>Emissivity<input data-thermometry="emissivity" type="number" min="0.01" max="1" step="0.01"></label>
+        <label>Reflected temperature (°C)<input data-thermometry="temp_reflected" type="number" min="-10" max="40" step="0.5"></label>
+        <label>Ambient temperature (°C)<input data-thermometry="temp_air" type="number" min="-10" max="40" step="0.5"></label>
+        <label>Humidity (%)<input data-thermometry="humidity" type="number" min="0" max="100" step="1"></label>
+        <label>Distance (m)<input data-thermometry="distance" type="number" min="0" max="100" step="1"></label>
+        <label>Temperature correction (°C)<input data-thermometry="correction" type="number" min="-100" max="100" step="0.5"></label>
+        <label>Apply correction locally<input data-thermometry="apply_correction_local" type="checkbox"></label>
+        <label>Temperature range<select id="thermometry-range" data-thermometry="range"></select></label>
+      </div>
+    </div>
+  </div>
+
+  <div id="measurement-modal" class="modal" onclick="modalBackdrop(event)">
+    <div class="modal-card">
+      <div class="modal-head"><h3>Measurement Settings</h3><button onclick="closeModal('measurement-modal')">Close</button></div>
+      <div class="settings-grid">
+        <label>Center temperature<input data-measurement="showcenter" type="checkbox"></label>
+        <label>Maximum temperature<input data-measurement="showmax" type="checkbox"></label>
+        <label>Minimum temperature<input data-measurement="showmin" type="checkbox"></label>
+        <label>Palette scale<input data-measurement="showpalette" type="checkbox"></label>
+      </div>
+    </div>
+  </div>
   <script>
     'use strict';
 
     const viewer = document.getElementById('viewer');
+    const cameraWrap = document.getElementById('camera-wrap');
     const live = document.getElementById('live');
+    const thermalOverlay = document.getElementById('thermal-overlay');
     const chart = document.getElementById('chart');
     const chartWrap = document.getElementById('chart-wrap');
     const recordButton = document.getElementById('record');
     const statusLabel = document.getElementById('status');
+    const paletteButton = document.getElementById('palette-button');
+    const lockButton = document.getElementById('lock-button');
+    const mirrorButton = document.getElementById('mirror-button');
+    const paletteRange = document.getElementById('palette-range');
+    const rangeMin = document.getElementById('range-min');
+    const rangeMax = document.getElementById('range-max');
+    const rangeMinValue = document.getElementById('range-min-value');
+    const rangeMaxValue = document.getElementById('range-max-value');
+    const rangeTrack = document.getElementById('range-track');
+    const thermometryButton = document.getElementById('thermometry-button');
+    const thermometryRange = document.getElementById('thermometry-range');
+    const battery = document.getElementById('battery');
+    const batteryFill = document.getElementById('battery-fill');
+    const batteryCharge = document.getElementById('battery-charge');
+    const batteryText = document.getElementById('battery-text');
     const data = { generation: -1, max: [], min: [], center: [] };
     let meta = {
       state: 0, intervalNs: 100000000, unit: 0,
@@ -92,15 +315,122 @@
     let drawPending = false;
     let savingVideo = false;
     let recordingExport = null;
+    let rangeEditing = false;
+    let lastCameraGeneration = null;
+    let stateOnline = false;
+    let streamRetryTimer = 0;
+    let chartHoldTimer = 0;
+    let chartHeld = false;
 
-    function sendCommand(name) {
-      return fetch('/control?cmd=' + encodeURIComponent(name), { cache: 'no-store' });
+    function sendCommand(name, value = '') {
+      return fetch('/control?cmd=' + encodeURIComponent(name) + '&value=' +
+        encodeURIComponent(value), { cache: 'no-store' });
+    }
+
+    function openModal(id) { document.getElementById(id).classList.add('open'); }
+    function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+    function modalBackdrop(event) {
+      if (event.target.classList.contains('modal')) event.target.classList.remove('open');
+    }
+
+    function setSyncedValue(element, value) {
+      if (document.activeElement === element) return;
+      if (element.type === 'checkbox') element.checked = Boolean(value);
+      else element.value = value;
+    }
+
+    function applyControlState(update) {
+      paletteButton.textContent = 'Palette ' + (Number(update.paletteIndex || 0) + 1);
+      lockButton.classList.toggle('active', Boolean(update.rangeLocked));
+      lockButton.textContent = update.rangeLocked ? 'Unlock Range' : 'Lock Range';
+      mirrorButton.classList.toggle('active', Boolean(update.mirror));
+
+      const minBound = Number(update.rangeBoundMin);
+      const maxBound = Number(update.rangeBoundMax);
+      const minValue = Number(update.rangeMin);
+      const maxValue = Number(update.rangeMax);
+      if (!rangeEditing && Number.isFinite(minBound) && Number.isFinite(maxBound) && maxBound > minBound) {
+        rangeMin.min = rangeMax.min = minBound;
+        rangeMin.max = rangeMax.max = maxBound;
+        rangeMin.value = Math.max(minBound, Math.min(maxBound, minValue));
+        rangeMax.value = Math.max(minBound, Math.min(maxBound, maxValue));
+        updateRangeLabels();
+      }
+      rangeMin.disabled = rangeMax.disabled = !update.rangeLocked;
+      paletteRange.classList.toggle('active', Boolean(update.rangeLocked));
+
+      if (update.battery) {
+        const level = Math.max(0, Math.min(100, Number(update.battery.level) || 0));
+        battery.style.display = update.battery.visible ? 'inline-flex' : 'none';
+        batteryFill.style.width = level + '%';
+        batteryFill.style.background = level < 20 ? '#dc2828' : level < 50 ? '#dc9600' : '#18c94b';
+        batteryText.textContent = level + '%';
+        batteryCharge.style.display = update.battery.charging ? 'inline' : 'none';
+      }
+      if (update.settings) document.querySelectorAll('[data-setting]').forEach(element =>
+        setSyncedValue(element, update.settings[element.dataset.setting]));
+      if (update.measurement) document.querySelectorAll('[data-measurement]').forEach(element =>
+        setSyncedValue(element, update.measurement[element.dataset.measurement]));
+      if (update.thermometry) {
+        thermometryButton.disabled = !update.thermometry.available;
+        const ranges = Array.isArray(update.thermometry.ranges) ? update.thermometry.ranges : [];
+        if (thermometryRange.options.length !== ranges.length) {
+          thermometryRange.replaceChildren(...ranges.map((range, index) => {
+            const option = document.createElement('option');
+            option.value = index;
+            option.textContent = Number(range[0]).toFixed(0) + '°C – ' +
+              Number(range[1]).toFixed(0) + '°C';
+            return option;
+          }));
+        }
+        document.querySelectorAll('[data-thermometry]').forEach(element =>
+          setSyncedValue(element, update.thermometry[element.dataset.thermometry]));
+      }
+    }
+
+    function updateRangeLabels() {
+      const unit = meta.overlay ? Number(meta.overlay.unit) || 0 : 0;
+      rangeMinValue.textContent = formatTemperature(Number(rangeMin.value), unit);
+      rangeMaxValue.textContent = formatTemperature(Number(rangeMax.value), unit);
+      const lo = Number(rangeMin.min), hi = Number(rangeMin.max);
+      const span = Math.max(.0001, hi - lo);
+      const minPercent = Math.max(0, Math.min(100, (Number(rangeMin.value) - lo) / span * 100));
+      const maxPercent = Math.max(0, Math.min(100, (Number(rangeMax.value) - lo) / span * 100));
+      rangeTrack.style.background = 'linear-gradient(to right,#555 0%,#555 ' + minPercent +
+        '%,#a22 ' + minPercent + '%,#a22 ' + maxPercent + '%,#555 ' + maxPercent + '%,#555 100%)';
+    }
+
+    function sendPaletteRange() {
+      let lo = Number(rangeMin.value), hi = Number(rangeMax.value);
+      if (lo >= hi) {
+        if (document.activeElement === rangeMin) lo = hi - .1;
+        else hi = lo + .1;
+        rangeMin.value = lo; rangeMax.value = hi;
+      }
+      updateRangeLabels();
+      return sendCommand('palette_range', lo + ',' + hi);
+    }
+
+    function togglePaletteLock() {
+      return sendCommand('palette_lock', String(!meta.rangeLocked));
     }
 
     function requestDraw() {
       if (drawPending) return;
       drawPending = true;
-      requestAnimationFrame(() => { drawPending = false; drawChart(); });
+      requestAnimationFrame(() => {
+        drawPending = false;
+        drawThermalOverlay();
+        drawChart();
+      });
+    }
+
+    function restartLiveStream(delay = 0) {
+      clearTimeout(streamRetryTimer);
+      streamRetryTimer = setTimeout(() => {
+        live.src = '/stream?camera=' + encodeURIComponent(lastCameraGeneration ?? 0) +
+          '&_=' + Date.now();
+      }, delay);
     }
 
     async function pollState() {
@@ -117,6 +447,16 @@
         data.min.push(...update.min);
         data.center.push(...update.center);
         meta = update;
+        const cameraGeneration = Number(update.cameraGeneration);
+        if (!stateOnline || (lastCameraGeneration !== null &&
+            cameraGeneration !== lastCameraGeneration)) {
+          lastCameraGeneration = cameraGeneration;
+          restartLiveStream();
+        } else {
+          lastCameraGeneration = cameraGeneration;
+        }
+        stateOnline = true;
+        applyControlState(update);
         viewer.classList.toggle('chart-on', update.state !== 0);
         if (!savingVideo) {
           recordButton.textContent = update.videoRecording ? 'Stop Recording' : 'Record Video';
@@ -124,10 +464,177 @@
         }
         requestDraw();
       } catch (error) {
+        stateOnline = false;
         statusLabel.textContent = 'Waiting for phone state...';
       } finally {
-        setTimeout(pollState, 250);
+        setTimeout(pollState, 100);
       }
+    }
+
+    function convertTemperature(celsius, unit) {
+      if (unit === 1) return celsius * 9 / 5 + 32;
+      if (unit === 2) return celsius + 273.15;
+      if (unit === 3) return (celsius + 273.15) * 9 / 5;
+      return celsius;
+    }
+
+    function formatTemperature(celsius, unit) {
+      const value = convertTemperature(Number(celsius), Number(unit) || 0);
+      const suffixes = ['°C', '°F', 'K', '°R'];
+      return (Number.isFinite(value) ? value.toFixed(2) : 'NaN') + (suffixes[unit] || '°C');
+    }
+
+    function mapThermalPoint(x, y, overlay, width, height) {
+      const sensorWidth = Math.max(1, Number(overlay.sensorWidth));
+      const sensorHeight = Math.max(1, Number(overlay.sensorHeight));
+      let tx = Number(x), ty = Number(y);
+      if (overlay.rotate90) {
+        const originalX = tx;
+        tx = sensorHeight - ty - 1;
+        ty = originalX;
+      }
+      const rotatedWidth = overlay.rotate90 ? sensorHeight : sensorWidth;
+      const rotatedHeight = overlay.rotate90 ? sensorWidth : sensorHeight;
+      const scale = Math.max(1, Number(overlay.scale) || 1);
+      let px = (tx + .5) / rotatedWidth * width * scale;
+      if (overlay.rotate) px = width * scale - px;
+      if (overlay.mirror) px = width * scale - px;
+      px -= (width * scale - width) / 2;
+      let py = (ty + .5) / rotatedHeight * height * scale;
+      if (overlay.rotate) py = height * scale - py;
+      py -= (height * scale - height) / 2;
+      return { x: px, y: py };
+    }
+
+    function outlinedText(context, text, x, y, align, color, outlineWidth) {
+      context.textAlign = align;
+      context.lineJoin = 'round';
+      context.strokeStyle = '#000';
+      context.lineWidth = outlineWidth;
+      context.strokeText(text, x, y);
+      context.fillStyle = color;
+      context.fillText(text, x, y);
+    }
+
+    function drawTemperaturePoint(context, overlay, width, height, x, y, value, color) {
+      const point = mapThermalPoint(x, y, overlay, width, height);
+      const marker = .015 * width;
+      context.lineCap = 'round';
+      context.lineWidth = .009 * width;
+      context.strokeStyle = '#000';
+      context.beginPath();
+      context.moveTo(point.x - marker, point.y); context.lineTo(point.x + marker, point.y);
+      context.moveTo(point.x, point.y - marker); context.lineTo(point.x, point.y + marker);
+      context.stroke();
+      context.lineWidth = .003 * width;
+      context.strokeStyle = color;
+      context.stroke();
+
+      const fontSize = Math.max(10, .035 * width);
+      const text = formatTemperature(value, overlay.unit);
+      context.font = fontSize + 'px sans-serif';
+      context.textBaseline = 'middle';
+      const offset = .03 * width;
+      const clearance = .005 * width;
+      const textWidth = context.measureText(text).width;
+      const placeLeft = point.x + offset + textWidth + clearance > width;
+      const textX = point.x + (placeLeft ? -offset : offset);
+      const textY = Math.max(fontSize / 2 + clearance,
+        Math.min(height - fontSize / 2 - clearance, point.y));
+      outlinedText(context, text, textX, textY, placeLeft ? 'right' : 'left', color,
+        Math.max(2, .008 * width));
+    }
+
+    function drawLock(context, x, y, size) {
+      context.save();
+      context.strokeStyle = '#fff';
+      context.fillStyle = 'rgba(0,0,0,.5)';
+      context.lineWidth = Math.max(1.5, size * .11);
+      context.beginPath();
+      context.arc(x + size * .5, y + size * .38, size * .25, Math.PI, 0);
+      context.stroke();
+      context.fillRect(x + size * .2, y + size * .38, size * .6, size * .5);
+      context.strokeRect(x + size * .2, y + size * .38, size * .6, size * .5);
+      context.restore();
+    }
+
+    function drawPaletteScale(context, overlay, width, height) {
+      const colors = Array.isArray(meta.paletteColors) ? meta.paletteColors : [];
+      const clear = .016 * width;
+      const fontSize = Math.max(10, .035 * width);
+      const paletteWidth = Math.max(5, .038 * width);
+      const left = width - clear - paletteWidth;
+      const right = width - clear;
+      const top = clear + fontSize + clear;
+      const bottom = height - clear - fontSize - clear;
+      if (bottom <= top) return;
+      const gradient = context.createLinearGradient(0, top, 0, bottom);
+      if (colors.length > 1) {
+        for (let i = 0; i < colors.length; ++i)
+          gradient.addColorStop(i / (colors.length - 1), colors[colors.length - 1 - i]);
+      } else {
+        gradient.addColorStop(0, '#fff'); gradient.addColorStop(1, '#000');
+      }
+      context.fillStyle = gradient;
+      context.fillRect(left, top, paletteWidth, bottom - top);
+      context.strokeStyle = '#000';
+      context.lineWidth = Math.max(1, .003 * width);
+      context.strokeRect(left, top, paletteWidth, bottom - top);
+
+      context.font = fontSize + 'px sans-serif';
+      context.textBaseline = 'alphabetic';
+      const maxText = formatTemperature(meta.rangeMax, overlay.unit);
+      const minText = formatTemperature(meta.rangeMin, overlay.unit);
+      const labelX = right;
+      outlinedText(context, maxText, labelX, clear + fontSize, 'right', '#fff',
+        Math.max(2, .008 * width));
+      outlinedText(context, minText, labelX, height - clear, 'right', '#fff',
+        Math.max(2, .008 * width));
+      if (meta.rangeLocked) {
+        const lockSize = fontSize * .85;
+        drawLock(context, labelX - context.measureText(maxText).width - lockSize - 3,
+          clear + fontSize * .08, lockSize);
+        drawLock(context, labelX - context.measureText(minText).width - lockSize - 3,
+          height - clear - fontSize, lockSize);
+      }
+    }
+
+    function drawThermalGraphics(context, width, height) {
+      const overlay = meta.overlay;
+      if (!overlay || overlay.sensorWidth <= 0 || overlay.sensorHeight <= 0) return;
+      if (overlay.showCenter)
+        drawTemperaturePoint(context, overlay, width, height,
+          Math.floor(overlay.sensorWidth / 2), Math.floor(overlay.sensorHeight / 2),
+          overlay.center, '#ffff00');
+      if (overlay.showMin)
+        drawTemperaturePoint(context, overlay, width, height,
+          overlay.minX, overlay.minY, overlay.min, '#007fff');
+      if (overlay.showMax)
+        drawTemperaturePoint(context, overlay, width, height,
+          overlay.maxX, overlay.maxY, overlay.max, '#ff4040');
+      if (overlay.showPalette) drawPaletteScale(context, overlay, width, height);
+    }
+
+    function drawThermalOverlay() {
+      if (!live.naturalWidth || !live.naturalHeight) return;
+      const imageRect = live.getBoundingClientRect();
+      const wrapRect = cameraWrap.getBoundingClientRect();
+      const width = Math.max(1, imageRect.width);
+      const height = Math.max(1, imageRect.height);
+      const ratio = Math.max(1, window.devicePixelRatio || 1);
+      thermalOverlay.style.left = (imageRect.left - wrapRect.left) + 'px';
+      thermalOverlay.style.top = (imageRect.top - wrapRect.top) + 'px';
+      thermalOverlay.style.width = width + 'px';
+      thermalOverlay.style.height = height + 'px';
+      const pixelWidth = Math.round(width * ratio), pixelHeight = Math.round(height * ratio);
+      if (thermalOverlay.width !== pixelWidth || thermalOverlay.height !== pixelHeight) {
+        thermalOverlay.width = pixelWidth;
+        thermalOverlay.height = pixelHeight;
+      }
+      const context = thermalOverlay.getContext('2d');
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, width, height);
+      drawThermalGraphics(context, width, height);
     }
 
     function niceStep(raw) {
@@ -185,24 +692,36 @@
       context.stroke();
     }
 
-    function drawChart() {
-      if (meta.state === 0 || chartWrap.clientWidth < 80 || chartWrap.clientHeight < 60) return;
-      const ratio = Math.max(1, window.devicePixelRatio || 1);
-      const width = chartWrap.clientWidth;
-      const height = chartWrap.clientHeight;
-      const pixelWidth = Math.round(width * ratio);
-      const pixelHeight = Math.round(height * ratio);
-      if (chart.width !== pixelWidth || chart.height !== pixelHeight) {
-        chart.width = pixelWidth;
-        chart.height = pixelHeight;
+    function drawPausedChartOverlay(context, width, height) {
+      context.fillStyle = 'rgba(0,0,0,.57)';
+      context.fillRect(0, 0, width, height);
+      context.fillStyle = '#fff';
+      context.textAlign = 'center';
+      context.font = '16px sans-serif';
+      const spacing = 23;
+      const first = height / 2 - spacing;
+      context.fillText('Stopped', width / 2, first);
+      context.fillText('Click to continue', width / 2, first + spacing);
+      context.fillText('Hold to delete', width / 2, first + spacing * 2);
+    }
+
+    function renderChart(target, width, height, ratio, showPausedOverlay = false) {
+      const pixelWidth = Math.max(1, Math.round(width * ratio));
+      const pixelHeight = Math.max(1, Math.round(height * ratio));
+      if (target.width !== pixelWidth || target.height !== pixelHeight) {
+        target.width = pixelWidth;
+        target.height = pixelHeight;
       }
-      const context = chart.getContext('2d');
+      const context = target.getContext('2d');
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
       context.fillStyle = '#fff';
       context.fillRect(0, 0, width, height);
       context.font = '15px sans-serif';
       context.textBaseline = 'alphabetic';
-      if (data.max.length === 0) return;
+      if (data.max.length === 0) {
+        if (showPausedOverlay && meta.state === 2) drawPausedChartOverlay(context, width, height);
+        return;
+      }
 
       const left = Math.max(52, context.measureText('-000.0').width + 4);
       const right = width - Math.max(22, context.measureText('0').width + 8);
@@ -302,14 +821,53 @@
       legend(meta.showMax, '#f00', 'Max. T');
       legend(meta.showMin, '#00f', 'Min. T');
       legend(meta.showCenter, '#dcaa00', 'Temperature');
+      if (showPausedOverlay && meta.state === 2)
+        drawPausedChartOverlay(context, width, height);
+    }
+
+    function drawChart() {
+      if (meta.state === 0 || chartWrap.clientWidth < 80 || chartWrap.clientHeight < 60) return;
+      renderChart(chart, chartWrap.clientWidth, chartWrap.clientHeight,
+        Math.max(1, window.devicePixelRatio || 1), true);
+    }
+
+    function exportChartCanvas(cameraWidth, cameraHeight, separate) {
+      /* Render afresh at export resolution. Copying the on-screen canvas would make
+       * chart quality depend on browser window size and devicePixelRatio. */
+      const output = document.createElement('canvas');
+      let chartWidth, chartHeight;
+      if (separate) {
+        const viewWidth = Math.max(1, Number(meta.viewWidth) || chartWrap.clientWidth || 1);
+        const viewHeight = Math.max(1, Number(meta.viewHeight) || chartWrap.clientHeight || 1);
+        chartWidth = cameraWidth;
+        chartHeight = Math.max(1, Math.round(chartWidth * viewHeight / viewWidth));
+      } else {
+        chartWidth = Math.max(1, Math.round(cameraWidth * 38 / 62));
+        chartHeight = cameraHeight;
+      }
+      renderChart(output, chartWidth, chartHeight, 1, false);
+      return output;
     }
 
     function cameraCanvas() {
       if (!live.naturalWidth || !live.naturalHeight) throw new Error('No camera frame yet');
+      const resolutions = [
+        [320, 240], [640, 480], [800, 600], [1024, 768],
+        [1600, 1200], [1280, 720], [1920, 1080]
+      ];
+      const selected = resolutions[Math.max(0, Math.min(resolutions.length - 1,
+        Number(meta.settings && meta.settings.pic_res) || 0))];
+      const portrait = live.naturalHeight > live.naturalWidth;
+      const width = portrait ? selected[1] : selected[0];
+      const height = portrait ? selected[0] : selected[1];
       const output = document.createElement('canvas');
-      output.width = live.naturalWidth;
-      output.height = live.naturalHeight;
-      output.getContext('2d').drawImage(live, 0, 0);
+      output.width = width;
+      output.height = height;
+      const context = output.getContext('2d');
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(live, 0, 0, width, height);
+      drawThermalGraphics(context, width, height);
       return output;
     }
 
@@ -351,19 +909,20 @@
     async function savePicture() {
       try {
         const camera = cameraCanvas();
-        const chartActive = meta.state !== 0 && chart.width > 0 && chart.height > 0;
+        const chartActive = meta.state !== 0 && data.max.length > 0;
+        const exportedChart = chartActive ? exportChartCanvas(camera.width, camera.height,
+          meta.exportSeparately) : null;
         const name = 'inficam_' + stamp();
         if (chartActive && meta.exportSeparately) {
           await downloadCanvas(camera, name);
-          await downloadCanvas(chart, name + '_chart');
+          await downloadCanvas(exportedChart, name + '_chart');
         } else if (chartActive) {
-          const chartWidth = Math.max(1, Math.round(chart.width * camera.height / chart.height));
           const combined = document.createElement('canvas');
-          combined.width = camera.width + chartWidth;
+          combined.width = camera.width + exportedChart.width;
           combined.height = camera.height;
           const context = combined.getContext('2d');
           context.drawImage(camera, 0, 0);
-          context.drawImage(chart, camera.width, 0, chartWidth, camera.height);
+          context.drawImage(exportedChart, camera.width, 0);
           await downloadCanvas(combined, name);
         } else {
           await downloadCanvas(camera, name);
@@ -427,8 +986,53 @@
       }
     }
 
+    for (const slider of [rangeMin, rangeMax]) {
+      slider.addEventListener('pointerdown', () => { rangeEditing = true; });
+      slider.addEventListener('focus', () => { rangeEditing = true; });
+      slider.addEventListener('input', updateRangeLabels);
+      slider.addEventListener('change', () => {
+        sendPaletteRange();
+        rangeEditing = false;
+      });
+      slider.addEventListener('blur', () => { rangeEditing = false; });
+    }
+    document.querySelectorAll('[data-setting]').forEach(element => {
+      element.addEventListener('change', () => sendCommand('setting',
+        element.dataset.setting + '=' + (element.type === 'checkbox' ? element.checked : element.value)));
+    });
+    document.querySelectorAll('[data-measurement]').forEach(element => {
+      element.addEventListener('change', () => sendCommand('measurement',
+        element.dataset.measurement + '=' + element.checked));
+    });
+    document.querySelectorAll('[data-thermometry]').forEach(element => {
+      element.addEventListener('change', () => sendCommand('thermometry',
+        element.dataset.thermometry + '=' +
+        (element.type === 'checkbox' ? element.checked : element.value)));
+    });
+    chartWrap.addEventListener('pointerdown', event => {
+      if (meta.state === 0) return;
+      chartHeld = false;
+      chartHoldTimer = setTimeout(() => {
+        chartHeld = true;
+        sendCommand('chart_delete');
+      }, 650);
+      event.preventDefault();
+    });
+    const finishChartPress = () => {
+      clearTimeout(chartHoldTimer);
+      if (!chartHeld && meta.state !== 0) sendCommand('chart_toggle');
+      chartHeld = false;
+    };
+    chartWrap.addEventListener('pointerup', finishChartPress);
+    chartWrap.addEventListener('pointercancel', () => clearTimeout(chartHoldTimer));
+    live.addEventListener('load', requestDraw);
+    live.addEventListener('error', () => restartLiveStream(1000));
     window.addEventListener('resize', requestDraw);
-    if ('ResizeObserver' in window) new ResizeObserver(requestDraw).observe(chartWrap);
+    if ('ResizeObserver' in window) {
+      const observer = new ResizeObserver(requestDraw);
+      observer.observe(chartWrap);
+      observer.observe(cameraWrap);
+    }
     pollState();
   </script>
 </body>

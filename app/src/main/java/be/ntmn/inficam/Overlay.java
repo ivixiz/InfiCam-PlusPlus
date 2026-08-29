@@ -92,10 +92,9 @@ public class Overlay {
 			return false;
 		vRect.set(imageRect);
 		int clear = (int) (pclearance * vRect.width());
-		int topClear = Math.max(clear, (int) (0.09f * vRect.width()));
 		int theight = (int) -(paint.descent() + paint.ascent());
 		int paletteWidth = (int) (pwidth * vRect.width());
-		int top = vRect.top + theight + topClear;
+		int top = vRect.top + theight + clear * 2;
 		int bottom = vRect.bottom - theight - clear * 2;
 		boolean outside = vRect.right + clear + paletteWidth <= width && width > vRect.width();
 		int left = outside ? vRect.right + clear : vRect.right - clear - paletteWidth;
@@ -177,16 +176,13 @@ public class Overlay {
 
 		if (d.showPalette) {
 			int clear = (int) (pclearance * vRect.width());
-			/* Keep the upper temperature label below the top control strip when
-			 * the camera viewport is shortened by Time Chart. */
-			int topClear = Math.max(clear, (int) (0.09f * vRect.width()));
 			int theight = (int) -(paint.descent() + paint.ascent());
-			/* Keep the upper number just a little above the palette, rather than
-			 * leaving it visually detached from the gradient. */
-			int topLabelY = vRect.top + topClear - Math.max(2, theight / 3);
+			/* Keep both end labels symmetric against the image edges. The shortened
+			 * camera viewport used with Time Chart already reserves the top controls. */
+			int topLabelY = vRect.top + clear;
 			int isize = (int) (theight + woutline * vRect.width());
 			int iclear = (int) (clear - (woutline * vRect.width()) / 2.0f);
-			int topLockY = vRect.top + iclear - Math.max(2, theight / 3);
+			int topLockY = vRect.top + iclear;
 			int paletteWidth = (int) (pwidth * vRect.width());
 			paint.setColor(Color.WHITE);
 			/* When the chart reduces the camera viewport, the image can become
@@ -197,7 +193,7 @@ public class Overlay {
 			if (width <= vRect.width() || !paletteFitsOutside) {
 				drawPalette(cvs,
 						(int) (vRect.right - clear - pwidth * vRect.width()),
-						vRect.top + theight + topClear,
+						vRect.top + theight + clear * 2,
 						vRect.right - clear,
 						vRect.bottom - theight - clear * 2,
 						settingsPalette.paletteBitmap);
@@ -220,7 +216,7 @@ public class Overlay {
 			} else {
 				drawPalette(cvs,
 						vRect.right + clear,
-						vRect.top + theight + topClear,
+						vRect.top + theight + clear * 2,
 						(int) (vRect.right + clear + pwidth * vRect.width()),
 						vRect.bottom - theight - clear * 2,
 						settingsPalette.paletteBitmap);

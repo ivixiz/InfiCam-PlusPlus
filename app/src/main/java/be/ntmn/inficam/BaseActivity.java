@@ -1,6 +1,7 @@
 package be.ntmn.inficam;
 
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -63,12 +64,23 @@ public class BaseActivity extends AppCompatActivity {
 		View dv = getWindow().getDecorView();
 		/* Flags to go properly fullscreen. */
 		int uiOptions = 0;
-		if (fullscreen)
+		/* Immersive flags interfere with the system divider/controls on a number of
+		 * OEM Android builds. Keep system UI available while this Activity is split. */
+		boolean multiWindow = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+				isInMultiWindowMode();
+		if (fullscreen && !multiWindow)
 			uiOptions |= View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_IMMERSIVE;
-		if (hideNav)
+		if (hideNav && !multiWindow)
 			uiOptions |= View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE;
 		dv.setSystemUiVisibility(uiOptions);
 	};
+
+	@Override
+	public void onMultiWindowModeChanged(boolean isInMultiWindowMode,
+			@NonNull Configuration newConfig) {
+		super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig);
+		deferHide();
+	}
 
 	@Override
 	public boolean dispatchGenericMotionEvent(MotionEvent ev) {
