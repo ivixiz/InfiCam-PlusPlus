@@ -90,6 +90,7 @@ public class MainActivity extends BaseActivity {
 	private boolean recordChartSeparately;
 	private boolean pauseRecordingAfterFrame;
 	private final Rect rect = new Rect(); /* To use during frames, to avoid allocating it there. */
+	private final Rect chartRect = new Rect();
 
 	private CameraView cameraView;
 	private MessageView messageView;
@@ -718,34 +719,79 @@ public class MainActivity extends BaseActivity {
 
 	private void drawFrame(SurfaceMuxer.OutputSurface os, Overlay overlay, boolean swap,
 						   Overlay.Data data, boolean includeChart) {
-		getRect(rect, os.width, os.height);
+		Bitmap chart = null;
+		if (includeChart && timeChartState != 0 && timeChart != null)
+			chart = timeChart.snapshot();
+		if (chart == null) {
+			getRect(rect, os.width, os.height);
+			chartRect.setEmpty();
+		} else {
+			getVideoChartRects(rect, chartRect, os.width, os.height, chart);
+		}
 		os.clear(0, 0, 0, 1);
 		thruSurface.draw(
 			os,
 			iMode,
 			rect.left,
-			rect.top,
+			/* glViewport uses a bottom-left origin while Overlay/Rect use Android's
+			 * top-left origin. Centered viewports hid this difference; the split video
+			 * layout needs an explicit conversion. */
+			os.height - rect.bottom,
 			rect.width(),
 			rect.height()
 		);
 		overlay.draw(data, settingsPalette, rect);
 		overlay.surface.draw(os, SurfaceMuxer.DM_LINEAR);
-		if (includeChart && timeChartState != 0 && timeChart != null) {
-			Bitmap chart = timeChart.snapshot();
-			if (chart != null) {
-				boolean landscape = orientation == Surface.ROTATION_90 ||
-						orientation == Surface.ROTATION_270;
-				int cw = landscape ? os.width * 38 / 100 : os.width;
-				int ch = landscape ? os.height : chart.getHeight() * os.width / chart.getWidth();
-				os.drawBitmap(chart, landscape ? os.width - cw : 0,
-						landscape ? 0 : os.height - ch, cw, ch);
-				chart.recycle();
-			}
+		if (chart != null) {
+			os.drawBitmap(chart, chartRect.left, chartRect.top,
+					chartRect.width(), chartRect.height());
+			chart.recycle();
 		}
 		// TODO draw normal video if needed
 		if (swap) {
 			os.setPresentationTime(inputSurface.surfaceTexture.getTimestamp());
 			os.swapBuffers();
+		}
+	}
+
+	/**
+	 * Fit the same contiguous camera/chart composition used by picture export inside a fixed-size
+	 * video frame. Scaling the complete composition uniformly keeps both panes undistorted and
+	 * guarantees that neither pane can overlap the other.
+	 */
+	private void getVideoChartRects(Rect camera, Rect chart, int outputWidth, int outputHeight,
+			Bitmap chartBitmap) {
+		getRect(camera, outputWidth, outputHeight);
+		float cameraWidth = Math.max(1, camera.width());
+		float cameraHeight = Math.max(1, camera.height());
+		float chartAspect = chartBitmap.getWidth() /
+				(float) Math.max(1, chartBitmap.getHeight());
+		boolean landscape = orientation == Surface.ROTATION_90 ||
+				orientation == Surface.ROTATION_270;
+		float naturalWidth;
+		float naturalHeight;
+		if (landscape) {
+			naturalWidth = cameraWidth + cameraHeight * chartAspect;
+			naturalHeight = cameraHeight;
+		} else {
+			naturalWidth = cameraWidth;
+			naturalHeight = cameraHeight + cameraWidth / chartAspect;
+		}
+		float scale = Math.min(outputWidth / naturalWidth, outputHeight / naturalHeight);
+		int groupWidth = Math.max(2, Math.min(outputWidth, Math.round(naturalWidth * scale)));
+		int groupHeight = Math.max(2, Math.min(outputHeight, Math.round(naturalHeight * scale)));
+		int left = (outputWidth - groupWidth) / 2;
+		int top = (outputHeight - groupHeight) / 2;
+		if (landscape) {
+			int cameraPaneWidth = Math.max(1, Math.min(groupWidth - 1,
+					Math.round(cameraWidth * scale)));
+			camera.set(left, top, left + cameraPaneWidth, top + groupHeight);
+			chart.set(camera.right, top, left + groupWidth, top + groupHeight);
+		} else {
+			int cameraPaneHeight = Math.max(1, Math.min(groupHeight - 1,
+					Math.round(cameraHeight * scale)));
+			camera.set(left, top, left + groupWidth, top + cameraPaneHeight);
+			chart.set(left, camera.bottom, left + groupWidth, top + groupHeight);
 		}
 	}
 

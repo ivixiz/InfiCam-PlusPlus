@@ -189,7 +189,20 @@ public class Overlay {
 			 * narrower than the output surface.  There may then be no room outside
 			 * the image on the right; keep the palette inside the image instead of
 			 * drawing it past the screen edge. */
-			boolean paletteFitsOutside = vRect.right + clear + paletteWidth <= width;
+			/* Outside placement must have room for the labels (and optional lock icons),
+			 * not only for the narrow gradient. This matters when a combined video is
+			 * uniformly fitted and leaves a small side margin around the camera pane. */
+			Util.formatTemp(sb, Float.isNaN(d.rangeMax) ? d.mmac.max : d.rangeMax, d.tempUnit);
+			int topOutsideWidth = (int) Math.ceil(
+					paintTextOutline.measureText(sb, 0, sb.length())) +
+					(Float.isNaN(d.rangeMax) ? 0 : isize);
+			Util.formatTemp(sb, Float.isNaN(d.rangeMin) ? d.mmac.min : d.rangeMin, d.tempUnit);
+			int bottomOutsideWidth = (int) Math.ceil(
+					paintTextOutline.measureText(sb, 0, sb.length())) +
+					(Float.isNaN(d.rangeMin) ? 0 : isize);
+			int outsideWidth = Math.max(paletteWidth,
+					Math.max(topOutsideWidth, bottomOutsideWidth));
+			boolean paletteFitsOutside = vRect.right + clear + outsideWidth <= width;
 			if (width <= vRect.width() || !paletteFitsOutside) {
 				drawPalette(cvs,
 						(int) (vRect.right - clear - pwidth * vRect.width()),
