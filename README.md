@@ -51,7 +51,7 @@ The chart sample rate can be configured from `0.04 s` (the 25 FPS camera period)
 is progressively decimated while preserving the overall trend and elapsed-time
 scale.
 
-<img width="2400" height="1080" alt="InfiCamPlus Time Chart" src="https://github.com/user-attachments/assets/f0ff7dd7-47ab-4f51-851e-003cbe32e1c7" />
+<img width="2400" height="1080" alt="Screenshot_20260830-141904104" src="https://github.com/user-attachments/assets/55b56047-8df2-4c3c-97e3-dd452d3f2e79" />
 
 ### Pictures, video, and sharing
 
@@ -105,8 +105,7 @@ state connection shows `Waiting for phone state...`; the message is cleared as s
 as polling succeeds again. Controls remain horizontally scrollable on narrow mobile
 browsers.
 
-<img width="1193" height="992" alt="InfiCamPlus Web Control" src="https://github.com/user-attachments/assets/1730f68c-1883-448c-8f01-0905b1404b35" />
-
+<img width="1193" height="754" alt="screenshot" src="https://github.com/user-attachments/assets/ad32e119-3eff-4608-95eb-742af45d616e" />
 #### Starting Web Control
 
 1. Connect the phone and viewing device to the same Wi-Fi/local network.
@@ -163,7 +162,7 @@ validated without access to the physical device.
 | --- | --- | --- | --- | --- |
 | T2S+ v1 | `1514:xxxx` | ✅ | Working in v1.0.5+. | [InfiCam](https://gitlab.com/netman69/inficam) |
 | T2S+ v2 | `04b4:0100` | ✅ | Working in v1.0.4+. | [#2](https://github.com/diminDDL/InfiCamPlus/issues/2), [#18](https://github.com/diminDDL/InfiCamPlus/pull/18) |
-| P2 Pro | `0bda:5830` | ✅ | Tested in this fork, including raw calibration, USB recovery, and normal/high-temperature ranges. | [#1](https://github.com/diminDDL/InfiCamPlus/issues/1), [#11](https://github.com/diminDDL/InfiCamPlus/pull/11) |
+| P2 Pro | `0bda:5830` | ✅ | Working in v1.1.0+. Tested in this fork, including raw calibration, USB recovery, and normal/high-temperature ranges. | [#1](https://github.com/diminDDL/InfiCamPlus/issues/1), [#11](https://github.com/diminDDL/InfiCamPlus/pull/11) |
 | HT301 | `1514:0001` | 🟥 | Not supported at this time; PRs are welcome. | [#5](https://github.com/diminDDL/InfiCamPlus/issues/5) |
 | UTi261M/UTi722M | `0bda:5830` | 🟥 | Shares a VID:PID with the P2 Pro but is not currently supported; PRs are welcome. | [#7](https://github.com/diminDDL/InfiCamPlus/issues/7) |
 | HT820 | `0bda:5840` | ✅ | Reported working by users. | [#12](https://github.com/diminDDL/InfiCamPlus/issues/12) |
