@@ -103,6 +103,7 @@
     }
     button { flex: 0 0 auto; white-space: nowrap; padding: 5px 10px; }
     button.active { color: #fff; border-color: #d33; background: #8b1a1a; }
+    button.paused { color: #fff; border-color: #d6ad00; background: #776000; }
     #palette-range {
       display: none;
       justify-content: center;
@@ -207,6 +208,7 @@
       <button type="button" onclick="openModal('settings-modal')">Settings</button>
       <button id="thermometry-button" type="button" onclick="openModal('thermometry-modal')">Thermometry Settings</button>
       <button type="button" onclick="openModal('measurement-modal')">Measurement Settings</button>
+      <button id="chart-button" type="button">Time Chart</button>
       <button onclick="savePicture()">Save Picture</button>
       <button id="record" onclick="toggleRecording()">Record Video</button>
     </div>
@@ -288,6 +290,7 @@
     const thermalOverlay = document.getElementById('thermal-overlay');
     const chart = document.getElementById('chart');
     const chartWrap = document.getElementById('chart-wrap');
+    const chartButton = document.getElementById('chart-button');
     const recordButton = document.getElementById('record');
     const statusLabel = document.getElementById('status');
     const paletteButton = document.getElementById('palette-button');
@@ -321,6 +324,7 @@
     let streamRetryTimer = 0;
     let chartHoldTimer = 0;
     let chartHeld = false;
+    const waitingStatus = 'Waiting for phone state...';
 
     function sendCommand(name, value = '') {
       return fetch('/control?cmd=' + encodeURIComponent(name) + '&value=' +
@@ -344,6 +348,10 @@
       lockButton.classList.toggle('active', Boolean(update.rangeLocked));
       lockButton.textContent = update.rangeLocked ? 'Unlock Range' : 'Lock Range';
       mirrorButton.classList.toggle('active', Boolean(update.mirror));
+      chartButton.classList.toggle('active', update.state === 1);
+      chartButton.classList.toggle('paused', update.state === 2);
+      chartButton.textContent = update.state === 0 ? 'Time Chart' :
+        update.state === 1 ? 'Pause Chart' : 'Continue Chart';
 
       const minBound = Number(update.rangeBoundMin);
       const maxBound = Number(update.rangeBoundMax);
@@ -456,6 +464,7 @@
           lastCameraGeneration = cameraGeneration;
         }
         stateOnline = true;
+        if (statusLabel.textContent === waitingStatus) statusLabel.textContent = '';
         applyControlState(update);
         viewer.classList.toggle('chart-on', update.state !== 0);
         if (!savingVideo) {
@@ -465,7 +474,7 @@
         requestDraw();
       } catch (error) {
         stateOnline = false;
-        statusLabel.textContent = 'Waiting for phone state...';
+        statusLabel.textContent = waitingStatus;
       } finally {
         setTimeout(pollState, 100);
       }
@@ -530,11 +539,11 @@
       context.strokeStyle = color;
       context.stroke();
 
-      const fontSize = Math.max(10, .035 * width);
+      const fontSize = Math.max(15, .0525 * width);
       const text = formatTemperature(value, overlay.unit);
       context.font = fontSize + 'px sans-serif';
       context.textBaseline = 'middle';
-      const offset = .03 * width;
+      const offset = .045 * width;
       const clearance = .005 * width;
       const textWidth = context.measureText(text).width;
       const placeLeft = point.x + offset + textWidth + clearance > width;
@@ -542,7 +551,7 @@
       const textY = Math.max(fontSize / 2 + clearance,
         Math.min(height - fontSize / 2 - clearance, point.y));
       outlinedText(context, text, textX, textY, placeLeft ? 'right' : 'left', color,
-        Math.max(2, .008 * width));
+        Math.max(3, .012 * width));
     }
 
     function drawLock(context, x, y, size) {
@@ -561,7 +570,7 @@
     function drawPaletteScale(context, overlay, width, height) {
       const colors = Array.isArray(meta.paletteColors) ? meta.paletteColors : [];
       const clear = .016 * width;
-      const fontSize = Math.max(10, .035 * width);
+      const fontSize = Math.max(15, .0525 * width);
       const paletteWidth = Math.max(5, .038 * width);
       const left = width - clear - paletteWidth;
       const right = width - clear;
@@ -587,9 +596,9 @@
       const minText = formatTemperature(meta.rangeMin, overlay.unit);
       const labelX = right;
       outlinedText(context, maxText, labelX, clear + fontSize, 'right', '#fff',
-        Math.max(2, .008 * width));
+        Math.max(3, .012 * width));
       outlinedText(context, minText, labelX, height - clear, 'right', '#fff',
-        Math.max(2, .008 * width));
+        Math.max(3, .012 * width));
       if (meta.rangeLocked) {
         const lockSize = fontSize * .85;
         drawLock(context, labelX - context.measureText(maxText).width - lockSize - 3,
@@ -688,7 +697,7 @@
         else context.lineTo(x, y);
       }
       context.strokeStyle = color;
-      context.lineWidth = 1;
+      context.lineWidth = 2;
       context.stroke();
     }
 
@@ -716,17 +725,37 @@
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
       context.fillStyle = '#fff';
       context.fillRect(0, 0, width, height);
-      context.font = '15px sans-serif';
+      const fontSize = 22.5;
+      context.font = fontSize + 'px sans-serif';
       context.textBaseline = 'alphabetic';
       if (data.max.length === 0) {
         if (showPausedOverlay && meta.state === 2) drawPausedChartOverlay(context, width, height);
         return;
       }
 
-      const left = Math.max(52, context.measureText('-000.0').width + 4);
-      const right = width - Math.max(22, context.measureText('0').width + 8);
-      const top = 52;
-      const bottom = height - 38;
+      const left = Math.max(52, context.measureText('-000.0').width + 8);
+      const right = width - Math.max(22, context.measureText('0').width + 10);
+      const units = ['°C', '°F', 'K', '°R'];
+      const suffix = ' [' + (units[meta.unit] || '°C') + ']';
+      const legendEntries = [];
+      if (meta.showMax) legendEntries.push({ color: '#f00', text: 'Max. T' + suffix });
+      if (meta.showMin) legendEntries.push({ color: '#00f', text: 'Min. T' + suffix });
+      if (meta.showCenter)
+        legendEntries.push({ color: '#dcaa00', text: 'Temperature' + suffix });
+      const legendGap = 12;
+      const legendLineHeight = fontSize * 1.2;
+      let legendRows = 1, legendCursor = left;
+      for (const entry of legendEntries) {
+        const entryWidth = context.measureText(entry.text).width;
+        if (legendCursor > left && legendCursor + entryWidth > right) {
+          ++legendRows;
+          legendCursor = left;
+        }
+        legendCursor += entryWidth + legendGap;
+      }
+      const legendFirstBaseline = fontSize + 7;
+      const top = Math.ceil(legendFirstBaseline + (legendRows - 1) * legendLineHeight + 14);
+      const bottom = height - Math.ceil(fontSize + 16);
       if (right <= left + 10 || bottom <= top + 10) return;
 
       let lo = Infinity, hi = -Infinity;
@@ -741,7 +770,9 @@
       include(data.center, meta.showCenter);
       if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
       if (hi - lo < .5) { hi += .25; lo -= .25; }
-      const step = niceStep((hi - lo) / 8);
+      const yDivisions = Math.max(2, Math.min(8,
+        Math.floor((bottom - top) / (fontSize * 1.8))));
+      const step = niceStep((hi - lo) / yDivisions);
       lo = Math.floor(lo / step) * step;
       hi = Math.ceil(hi / step) * step;
       const majorCount = Math.ceil((hi - lo) / step);
@@ -794,7 +825,7 @@
         const label = formatDuration(time, duration);
         const halfWidth = context.measureText(label).width / 2;
         if (x - halfWidth >= previousRight + 4 || time === 0) {
-          context.fillText(label, x, height - 7);
+          context.fillText(label, x, height - 10);
           previousRight = x + halfWidth;
         }
       }
@@ -806,21 +837,19 @@
       context.lineWidth = 5;
       context.strokeStyle = '#444';
       context.strokeRect(left, top, right - left, bottom - top);
-      const units = ['°C', '°F', 'K', '°R'];
-      const suffix = ' [' + (units[meta.unit] || '°C') + ']';
       let legendX = left;
-      const legendY = 33;
+      let legendY = legendFirstBaseline;
       context.textAlign = 'left';
-      const legend = (enabled, color, label) => {
-        if (!enabled) return;
-        const text = label + suffix;
-        context.fillStyle = color;
-        context.fillText(text, legendX, legendY);
-        legendX += context.measureText(text).width + 18;
-      };
-      legend(meta.showMax, '#f00', 'Max. T');
-      legend(meta.showMin, '#00f', 'Min. T');
-      legend(meta.showCenter, '#dcaa00', 'Temperature');
+      for (const entry of legendEntries) {
+        const entryWidth = context.measureText(entry.text).width;
+        if (legendX > left && legendX + entryWidth > right) {
+          legendX = left;
+          legendY += legendLineHeight;
+        }
+        context.fillStyle = entry.color;
+        context.fillText(entry.text, legendX, legendY);
+        legendX += entryWidth + legendGap;
+      }
       if (showPausedOverlay && meta.state === 2)
         drawPausedChartOverlay(context, width, height);
     }
@@ -835,21 +864,21 @@
       /* Render afresh at export resolution. Copying the on-screen canvas would make
        * chart quality depend on browser window size and devicePixelRatio. */
       const output = document.createElement('canvas');
+      const viewWidth = Math.max(1, Number(meta.viewWidth) || chartWrap.clientWidth || 1);
+      const viewHeight = Math.max(1, Number(meta.viewHeight) || chartWrap.clientHeight || 1);
       let chartWidth, chartHeight;
-      if (separate) {
-        const viewWidth = Math.max(1, Number(meta.viewWidth) || chartWrap.clientWidth || 1);
-        const viewHeight = Math.max(1, Number(meta.viewHeight) || chartWrap.clientHeight || 1);
+      if (separate || cameraHeight > cameraWidth) {
         chartWidth = cameraWidth;
         chartHeight = Math.max(1, Math.round(chartWidth * viewHeight / viewWidth));
       } else {
-        chartWidth = Math.max(1, Math.round(cameraWidth * 38 / 62));
         chartHeight = cameraHeight;
+        chartWidth = Math.max(1, Math.round(chartHeight * viewWidth / viewHeight));
       }
       renderChart(output, chartWidth, chartHeight, 1, false);
       return output;
     }
 
-    function cameraCanvas() {
+    function cameraCanvas(cropToContent = false) {
       if (!live.naturalWidth || !live.naturalHeight) throw new Error('No camera frame yet');
       const resolutions = [
         [320, 240], [640, 480], [800, 600], [1024, 768],
@@ -858,16 +887,33 @@
       const selected = resolutions[Math.max(0, Math.min(resolutions.length - 1,
         Number(meta.settings && meta.settings.pic_res) || 0))];
       const portrait = live.naturalHeight > live.naturalWidth;
-      const width = portrait ? selected[1] : selected[0];
-      const height = portrait ? selected[0] : selected[1];
-      const output = document.createElement('canvas');
-      output.width = width;
-      output.height = height;
-      const context = output.getContext('2d');
+      const boundWidth = portrait ? selected[1] : selected[0];
+      const boundHeight = portrait ? selected[0] : selected[1];
+      const scale = Math.min(boundWidth / live.naturalWidth,
+        boundHeight / live.naturalHeight);
+      const width = Math.max(1, Math.round(live.naturalWidth * scale));
+      const height = Math.max(1, Math.round(live.naturalHeight * scale));
+      const content = document.createElement('canvas');
+      content.width = width;
+      content.height = height;
+      const context = content.getContext('2d');
       context.imageSmoothingEnabled = true;
       context.imageSmoothingQuality = 'high';
       context.drawImage(live, 0, 0, width, height);
       drawThermalGraphics(context, width, height);
+      if (cropToContent) return content;
+
+      /* Match the phone's normal/separate capture: keep the configured resolution and
+       * center the undistorted camera content in it. Combined chart export requests the
+       * content canvas directly so no letterbox band can become an inter-panel gap. */
+      const output = document.createElement('canvas');
+      output.width = boundWidth;
+      output.height = boundHeight;
+      const outputContext = output.getContext('2d');
+      outputContext.fillStyle = '#000';
+      outputContext.fillRect(0, 0, boundWidth, boundHeight);
+      outputContext.drawImage(content, Math.round((boundWidth - width) / 2),
+        Math.round((boundHeight - height) / 2));
       return output;
     }
 
@@ -908,8 +954,8 @@
 
     async function savePicture() {
       try {
-        const camera = cameraCanvas();
         const chartActive = meta.state !== 0 && data.max.length > 0;
+        const camera = cameraCanvas(chartActive && !meta.exportSeparately);
         const exportedChart = chartActive ? exportChartCanvas(camera.width, camera.height,
           meta.exportSeparately) : null;
         const name = 'inficam_' + stamp();
@@ -918,11 +964,13 @@
           await downloadCanvas(exportedChart, name + '_chart');
         } else if (chartActive) {
           const combined = document.createElement('canvas');
-          combined.width = camera.width + exportedChart.width;
-          combined.height = camera.height;
+          const portrait = camera.height > camera.width;
+          combined.width = portrait ? camera.width : camera.width + exportedChart.width;
+          combined.height = portrait ? camera.height + exportedChart.height : camera.height;
           const context = combined.getContext('2d');
           context.drawImage(camera, 0, 0);
-          context.drawImage(exportedChart, camera.width, 0);
+          context.drawImage(exportedChart, portrait ? 0 : camera.width,
+            portrait ? camera.height : 0);
           await downloadCanvas(combined, name);
         } else {
           await downloadCanvas(camera, name);
@@ -1009,22 +1057,38 @@
         element.dataset.thermometry + '=' +
         (element.type === 'checkbox' ? element.checked : element.value)));
     });
-    chartWrap.addEventListener('pointerdown', event => {
-      if (meta.state === 0) return;
+    const beginChartPress = (event, allowHidden) => {
+      if (!allowHidden && meta.state === 0) return;
       chartHeld = false;
-      chartHoldTimer = setTimeout(() => {
-        chartHeld = true;
-        sendCommand('chart_delete');
-      }, 650);
+      if (meta.state !== 0) {
+        chartHoldTimer = setTimeout(() => {
+          chartHeld = true;
+          sendCommand('chart_delete');
+        }, 650);
+      }
       event.preventDefault();
-    });
-    const finishChartPress = () => {
+    };
+    const finishChartPress = allowHidden => {
       clearTimeout(chartHoldTimer);
-      if (!chartHeld && meta.state !== 0) sendCommand('chart_toggle');
+      if (!chartHeld && (allowHidden || meta.state !== 0)) sendCommand('chart_toggle');
       chartHeld = false;
     };
-    chartWrap.addEventListener('pointerup', finishChartPress);
-    chartWrap.addEventListener('pointercancel', () => clearTimeout(chartHoldTimer));
+    const cancelChartPress = () => {
+      clearTimeout(chartHoldTimer);
+      chartHeld = false;
+    };
+    chartWrap.addEventListener('pointerdown', event => beginChartPress(event, false));
+    chartWrap.addEventListener('pointerup', () => finishChartPress(false));
+    chartWrap.addEventListener('pointercancel', cancelChartPress);
+    chartButton.addEventListener('pointerdown', event => beginChartPress(event, true));
+    chartButton.addEventListener('pointerup', () => finishChartPress(true));
+    chartButton.addEventListener('pointercancel', cancelChartPress);
+    chartButton.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        sendCommand('chart_toggle');
+      }
+    });
     live.addEventListener('load', requestDraw);
     live.addEventListener('error', () => restartLiveStream(1000));
     window.addEventListener('resize', requestDraw);

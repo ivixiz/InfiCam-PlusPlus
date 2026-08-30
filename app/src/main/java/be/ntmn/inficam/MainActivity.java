@@ -899,28 +899,50 @@ public class MainActivity extends BaseActivity {
 		return addTimeChart(bitmap);
 	}
 
+	/** Remove the letterbox area introduced by a configured picture resolution whose aspect
+	 * ratio differs from the current camera. This keeps every supported sensor dynamic and also
+	 * prevents a bottom letterbox band becoming a gap before an appended chart. */
+	private Bitmap cropCameraContent(Bitmap bitmap) {
+		if (bitmap == null)
+			return null;
+		Rect crop = new Rect();
+		getRect(crop, bitmap.getWidth(), bitmap.getHeight());
+		crop.intersect(0, 0, bitmap.getWidth(), bitmap.getHeight());
+		if (crop.isEmpty() || (crop.left == 0 && crop.top == 0 &&
+				crop.right == bitmap.getWidth() && crop.bottom == bitmap.getHeight()))
+			return bitmap;
+		Bitmap cropped = Bitmap.createBitmap(bitmap, crop.left, crop.top,
+				crop.width(), crop.height());
+		if (cropped != bitmap)
+			bitmap.recycle();
+		return cropped;
+	}
+
 	private Bitmap addTimeChart(Bitmap bitmap) {
 		if (bitmap == null || timeChartState == 0 || timeChart == null)
 			return bitmap;
 		Bitmap chart = timeChart.snapshot();
 		if (chart == null)
 			return bitmap;
+		bitmap = cropCameraContent(bitmap);
 		boolean landscape = orientation == Surface.ROTATION_90 ||
 				orientation == Surface.ROTATION_270;
-		int chartWidth = landscape ? bitmap.getWidth() * 38 / 100 : bitmap.getWidth();
+		int chartWidth = landscape ?
+				Math.max(1, Math.round(bitmap.getHeight() * chart.getWidth() /
+						(float) chart.getHeight())) : bitmap.getWidth();
 		int chartHeight = landscape ? bitmap.getHeight() :
-				chart.getHeight() * bitmap.getWidth() / chart.getWidth();
+				Math.max(1, Math.round(chart.getHeight() * bitmap.getWidth() /
+						(float) chart.getWidth()));
 		/* Exported composition is contiguous, matching the chart/video layout. */
-		int gap = 0;
 		Bitmap combined = Bitmap.createBitmap(
 				landscape ? bitmap.getWidth() + chartWidth : bitmap.getWidth(),
-				landscape ? bitmap.getHeight() : bitmap.getHeight() + gap + chartHeight,
+				landscape ? bitmap.getHeight() : bitmap.getHeight() + chartHeight,
 				Bitmap.Config.ARGB_8888);
 		Canvas canvas = new Canvas(combined);
 		canvas.drawBitmap(bitmap, 0, 0, null);
 		Bitmap scaledChart = Bitmap.createScaledBitmap(chart, chartWidth, chartHeight, true);
 		canvas.drawBitmap(scaledChart, landscape ? bitmap.getWidth() : 0,
-				landscape ? 0 : bitmap.getHeight() + gap, null);
+				landscape ? 0 : bitmap.getHeight(), null);
 		if (scaledChart != chart)
 			scaledChart.recycle();
 		chart.recycle();
