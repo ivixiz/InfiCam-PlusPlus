@@ -27,7 +27,12 @@ public final class TimeChartView extends View {
 	private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 	private final Path path = new Path();
 	private long lastSampleNs;
+	private long acquisitionIntervalNs = DEFAULT_SAMPLE_NS;
 	private long effectiveIntervalNs = DEFAULT_SAMPLE_NS;
+	private int averageSamples = 1;
+	private int averageCount;
+	private double maxSum, minSum, centerSum;
+	private int maxSumCount, minSumCount, centerSumCount;
 	private boolean recording;
 	private boolean showMax, showMin, showCenter;
 	private int unit;
@@ -48,10 +53,18 @@ public final class TimeChartView extends View {
 
 	public synchronized void start(int tempUnit, boolean max, boolean min, boolean center,
 			long intervalNs) {
+		start(tempUnit, max, min, center, intervalNs, 1);
+	}
+
+	public synchronized void start(int tempUnit, boolean max, boolean min, boolean center,
+			long intervalNs, int samplesToAverage) {
 		sampleCount = 0;
 		dataGeneration++;
 		lastSampleNs = 0;
-		effectiveIntervalNs = Math.max(1_000_000L, intervalNs);
+		acquisitionIntervalNs = Math.max(1_000_000L, intervalNs);
+		averageSamples = Math.max(1, Math.min(16, samplesToAverage));
+		effectiveIntervalNs = saturatedMultiply(acquisitionIntervalNs, averageSamples);
+		resetAverage();
 		unit = tempUnit;
 		showMax = max; showMin = min; showCenter = center;
 		recording = true;
@@ -74,6 +87,7 @@ public final class TimeChartView extends View {
 	public synchronized void clear() {
 		sampleCount = 0;
 		lastSampleNs = 0;
+		resetAverage();
 		recording = false;
 		dataGeneration++;
 		invalidate();
@@ -150,14 +164,23 @@ public final class TimeChartView extends View {
 		if (!recording)
 			return;
 		long now = System.nanoTime();
-		/* Once old points are decimated, collect future points at the same effective
-		 * interval. This keeps the time axis correct and progressively reduces work
-		 * during multi-hour measurements. */
-		if (lastSampleNs != 0 && now - lastSampleNs < effectiveIntervalNs)
+		/* Once old points are decimated, increase the acquisition interval too. The
+		 * output interval additionally includes the averaging window, keeping the time
+		 * axis correct while progressively reducing work during multi-hour logs. */
+		if (lastSampleNs != 0 && now - lastSampleNs < acquisitionIntervalNs)
 			return;
 		lastSampleNs = now;
 		unit = tempUnit;
 		showMax = showMaxValue; showMin = showMinValue; showCenter = showCenterValue;
+		if (Float.isFinite(max)) { maxSum += max; maxSumCount++; }
+		if (Float.isFinite(min)) { minSum += min; minSumCount++; }
+		if (Float.isFinite(center)) { centerSum += center; centerSumCount++; }
+		if (++averageCount < averageSamples)
+			return;
+		float averagedMax = maxSumCount == 0 ? Float.NaN : (float)(maxSum / maxSumCount);
+		float averagedMin = minSumCount == 0 ? Float.NaN : (float)(minSum / minSumCount);
+		float averagedCenter = centerSumCount == 0 ? Float.NaN : (float)(centerSum / centerSumCount);
+		resetAverage();
 		if (sampleCount >= MAX_SAMPLES) {
 			/* Decimate in one pass instead of shifting one element for every new
 			 * sample. This keeps memory and drawing time bounded for multi-hour logs. */
@@ -176,15 +199,26 @@ public final class TimeChartView extends View {
 				out++;
 			}
 			sampleCount = out;
+			acquisitionIntervalNs = Math.min(Long.MAX_VALUE / 2, acquisitionIntervalNs * 2L);
 			effectiveIntervalNs = Math.min(Long.MAX_VALUE / 2, effectiveIntervalNs * 2L);
 			dataGeneration++;
 		}
 		ensureCapacity(sampleCount + 1);
-		maxValues[sampleCount] = convert(max, tempUnit);
-		minValues[sampleCount] = convert(min, tempUnit);
-		centerValues[sampleCount] = convert(center, tempUnit);
+		maxValues[sampleCount] = convert(averagedMax, tempUnit);
+		minValues[sampleCount] = convert(averagedMin, tempUnit);
+		centerValues[sampleCount] = convert(averagedCenter, tempUnit);
 		sampleCount++;
 		postInvalidateOnAnimation();
+	}
+
+	private void resetAverage() {
+		averageCount = 0;
+		maxSum = minSum = centerSum = 0.0;
+		maxSumCount = minSumCount = centerSumCount = 0;
+	}
+
+	private static long saturatedMultiply(long value, int multiplier) {
+		return value > Long.MAX_VALUE / multiplier ? Long.MAX_VALUE : value * multiplier;
 	}
 
 	private void ensureCapacity(int required) {

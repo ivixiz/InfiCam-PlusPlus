@@ -67,6 +67,7 @@
 	<string name="set_pic_quality">Picture quality (%d%%)</string>
 	<string name="set_unit">Temperature unit</string>
 	<string name="set_chart_sample_rate">Chart sample rate (seconds)</string>
+	<string name="set_chart_average_samples">Average per sample:</string>
 	<string name="set_export_chart_separately">Export chart separately</string>
 	<string name="set_defaults">Reset to defaults</string>
 

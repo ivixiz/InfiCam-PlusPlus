@@ -462,6 +462,84 @@ public abstract class Settings extends LinearLayout {
 		void onSetByUser(float value) { onSet(value); }
 	}
 
+	/** A compact persisted integer input for bounded acquisition parameters. */
+	public abstract class SettingIntInput extends Setting {
+		private final int def, min, max;
+		private EditText input;
+		private boolean updating;
+
+		SettingIntInput(String name, int res, int def, int min, int max) {
+			super(name, res);
+			this.def = def;
+			this.min = min;
+			this.max = max;
+		}
+
+		@Override void init(Settings set) {
+			LinearLayout row = new LinearLayout(getContext());
+			row.setOrientation(LinearLayout.HORIZONTAL);
+			row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+			TextView label = new TextView(getContext());
+			label.setText(res);
+			row.addView(label, new LinearLayout.LayoutParams(
+					0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+			input = new EditText(getContext());
+			input.setSingleLine(true);
+			input.setInputType(InputType.TYPE_CLASS_NUMBER);
+			input.setSelectAllOnFocus(true);
+			row.addView(input, new LinearLayout.LayoutParams(
+					dp(110), ViewGroup.LayoutParams.WRAP_CONTENT));
+			input.addTextChangedListener(new TextWatcher() {
+				public void beforeTextChanged(CharSequence s, int st, int c, int a) { }
+				public void onTextChanged(CharSequence s, int st, int before, int count) { }
+				public void afterTextChanged(Editable e) {
+					if (updating) return;
+					try {
+						int value = Integer.parseInt(e.toString());
+						/* Keep multi-digit entry natural. Out-of-range intermediate text is
+						 * normalized only when focus leaves the field. */
+						if (value >= min && value <= max) {
+							ed.putInt(name, value).commit();
+							onSet(value);
+							set.handleChange();
+						}
+					} catch (NumberFormatException ignored) { }
+				}
+			});
+			input.setOnFocusChangeListener((view, focused) -> {
+				if (focused) return;
+				try {
+					setTo(clamp(Integer.parseInt(input.getText().toString())));
+					set.handleChange();
+				} catch (NumberFormatException ignored) {
+					setTo(def);
+					set.handleChange();
+				}
+			});
+			set.addView(row);
+		}
+
+		private int dp(int value) {
+			return (int)(value * getResources().getDisplayMetrics().density + .5f);
+		}
+
+		private int clamp(int value) { return Math.max(min, Math.min(max, value)); }
+
+		private void setTo(int value) {
+			value = clamp(value);
+			ed.putInt(name, value).commit();
+			updating = true;
+			input.setText(Integer.toString(value));
+			input.setSelection(input.length());
+			updating = false;
+			onSet(value);
+		}
+
+		@Override void load() { setTo(sp.getInt(name, def)); }
+		@Override void setDefault() { setTo(def); }
+		abstract void onSet(int value);
+	}
+
 	public abstract class SettingButton extends Setting {
 		SettingButton(int res) { super(null, res); }
 
@@ -605,6 +683,10 @@ public abstract class Settings extends LinearLayout {
 				value = slider.clampValue(value);
 				ed.putInt(name, value).commit();
 				slider.setTo(value);
+			} else if (setting instanceof SettingIntInput) {
+				SettingIntInput input = (SettingIntInput) setting;
+				int value = input.clamp(Integer.parseInt(serializedValue));
+				input.setTo(value);
 			} else if (setting instanceof SettingFloatInput) {
 				SettingFloatInput input = (SettingFloatInput) setting;
 				float value = input.clamp(Float.parseFloat(serializedValue));

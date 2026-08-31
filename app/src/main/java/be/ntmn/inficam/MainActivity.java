@@ -160,6 +160,7 @@ public class MainActivity extends BaseActivity {
 	private Bitmap imgCompressBitmap;
 	private Bitmap imgCompressChartBitmap;
 	private float chartSampleRateSeconds = 0.1f;
+	private int chartAverageSamples = 1;
 	private volatile boolean exportChartSeparately;
 	private float paletteManualMin = 0.0f;
 	private float paletteManualMax = 100.0f;
@@ -1236,6 +1237,8 @@ public class MainActivity extends BaseActivity {
 				.append(",\"unit\":").append(main.getInt("unit", 0))
 				.append(",\"chart_sample_rate\":").append(webFloat(
 						main.getFloat("chart_sample_rate", 0.1f), 0.1f))
+				.append(",\"chart_average_samples\":").append(
+						main.getInt("chart_average_samples", 1))
 				.append(",\"export_chart_separately\":").append(
 						main.getBoolean("export_chart_separately", false))
 				.append("},\"paletteColors\":[");
@@ -1269,7 +1272,8 @@ public class MainActivity extends BaseActivity {
 			timeChartState = 1;
 			timeChart.start(overlayData.tempUnit, overlayData.showMax,
 					 overlayData.showMin, overlayData.showCenter,
-					 (long) (chartSampleRateSeconds * 1_000_000_000L));
+					 (long) (chartSampleRateSeconds * 1_000_000_000L),
+					 chartAverageSamples);
 			timeChart.setVisibility(View.VISIBLE);
 			/* The chart is a foreground canvas; explicitly keep the control strips
 			 * above it when its height changes. */
@@ -2116,6 +2120,10 @@ public class MainActivity extends BaseActivity {
 
 	public void setChartSampleRate(float value) {
 		chartSampleRateSeconds = Math.max(1.0f / 25.0f, Math.min(1800.0f, value));
+	}
+
+	public void setChartAverageSamples(int value) {
+		chartAverageSamples = Math.max(1, Math.min(16, value));
 	}
 
 	public void setExportChartSeparately(boolean value) { exportChartSeparately = value; }

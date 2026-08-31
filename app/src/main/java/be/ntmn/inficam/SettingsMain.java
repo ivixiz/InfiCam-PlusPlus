@@ -243,6 +243,10 @@ public class SettingsMain extends Settings {
 						0.1f, 1.0f / 25.0f, 1800.0f) {
 					@Override void onSet(float value) { act.setChartSampleRate(value); }
 				},
+				new SettingIntInput("chart_average_samples", R.string.set_chart_average_samples,
+						1, 1, 16) {
+					@Override void onSet(int value) { act.setChartAverageSamples(value); }
+				},
 				new SettingBool("export_chart_separately", R.string.set_export_chart_separately, false) {
 					@Override void onSet(boolean value) { act.setExportChartSeparately(value); }
 				},
