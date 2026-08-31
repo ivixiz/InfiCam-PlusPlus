@@ -109,6 +109,7 @@ public class SurfaceMuxer {
 		public float scale_x = 1.0f, scale_y = 1.0f;
 		public float translate_x = 0.0f, translate_y = 0.0f;
 		public float sharpening = 0.0f;
+		public float denoise = 0.0f;
 
 		public InputSurface(SurfaceMuxer muxer) {
 			this.muxer = muxer;
@@ -210,6 +211,8 @@ public class SurfaceMuxer {
 			GLES20.glUniform2f(isc, width, height);
 			int sh = GLES20.glGetUniformLocation(program, "sharpening");
 			GLES20.glUniform1f(sh, sharpening); /* It's okay if the shader doesn't have this. */
+			int dn = GLES20.glGetUniformLocation(program, "denoise");
+			GLES20.glUniform1f(dn, denoise); /* Only the low-resolution filter uses this. */
 
 			GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
 			GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textures[0]);

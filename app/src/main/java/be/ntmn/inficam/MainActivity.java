@@ -1227,6 +1227,7 @@ public class MainActivity extends BaseActivity {
 				.append(",\"mirror\":").append(main.getBoolean("mirror", false))
 				.append(",\"imode\":").append(main.getInt("imode", 1))
 				.append(",\"sharpening\":").append(webFloat(main.getInt("sharpening", 20) / 100.0f, 0.2f))
+				.append(",\"denoise\":").append(webFloat(main.getInt("denoise", 25) / 100.0f, 0.25f))
 				.append(",\"recordaudio\":").append(main.getBoolean("recordaudio", true))
 				.append(",\"fullscreen\":").append(main.getBoolean("fullscreen", true))
 				.append(",\"hide_navigation\":").append(main.getBoolean("hide_navigation", true))
@@ -2119,6 +2120,9 @@ public class MainActivity extends BaseActivity {
 
 	public void setIMode(int value) { iMode = value; }
 	public void setSharpening(float value) { inputSurface.sharpening = value; }
+	public void setDenoise(float value) {
+		inputSurface.denoise = Math.max(0.0f, Math.min(1.0f, value));
+	}
 
 	public void setRecordAudio(boolean value) { recordAudio = value; }
 

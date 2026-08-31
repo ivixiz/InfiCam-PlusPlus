@@ -145,6 +145,12 @@ public class SettingsMain extends Settings {
 						act.setSharpening(f);
 					}
 				},
+				new SettingSliderFloat("denoise", R.string.set_denoise, 25, 0, 100, 5, 100) {
+					@Override
+					void onSet(float f) {
+						act.setDenoise(f);
+					}
+				},
 				new SettingBool("recordaudio", R.string.set_recordaudio, true) {
 					@Override
 					void onSet(boolean value) {
