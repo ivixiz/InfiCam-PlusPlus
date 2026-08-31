@@ -1090,7 +1090,8 @@ public class MainActivity extends BaseActivity {
 
 		float rangeMin, rangeMax, boundMin, boundMax;
 		float measuredMin = 0.0f, measuredMax = 0.0f, measuredCenter = 0.0f;
-		int minX = 0, minY = 0, maxX = 0, maxY = 0, sensorWidth = 0, sensorHeight = 0;
+		int minX = 0, minY = 0, maxX = 0, maxY = 0, centerX = 0, centerY = 0,
+				sensorWidth = 0, sensorHeight = 0;
 		boolean rangeLocked, mirror, rotate, rotate90, showMin, showMax, showCenter,
 				showPalette;
 		float webScale;
@@ -1125,6 +1126,8 @@ public class MainActivity extends BaseActivity {
 				minY = overlayData.mmac.min_y;
 				maxX = overlayData.mmac.max_x;
 				maxY = overlayData.mmac.max_y;
+				centerX = overlayData.mmac.center_x;
+				centerY = overlayData.mmac.center_y;
 			}
 		}
 		float[] thermalRange = settingsTherm == null ? null : settingsTherm.getRange();
@@ -1176,6 +1179,7 @@ public class MainActivity extends BaseActivity {
 				.append(",\"center\":").append(webFloat(measuredCenter, 0.0f))
 				.append(",\"minX\":").append(minX).append(",\"minY\":").append(minY)
 				.append(",\"maxX\":").append(maxX).append(",\"maxY\":").append(maxY)
+				.append(",\"centerX\":").append(centerX).append(",\"centerY\":").append(centerY)
 				.append('}')
 				.append(",\"battery\":{\"level\":").append(batteryPercent)
 				.append(",\"charging\":").append(batteryCharging)

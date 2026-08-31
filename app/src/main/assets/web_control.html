@@ -614,7 +614,10 @@
       if (!overlay || overlay.sensorWidth <= 0 || overlay.sensorHeight <= 0) return;
       if (overlay.showCenter)
         drawTemperaturePoint(context, overlay, width, height,
-          Math.floor(overlay.sensorWidth / 2), Math.floor(overlay.sensorHeight / 2),
+          Number.isFinite(Number(overlay.centerX)) ? Number(overlay.centerX) :
+            Math.floor(overlay.sensorWidth / 2),
+          Number.isFinite(Number(overlay.centerY)) ? Number(overlay.centerY) :
+            Math.floor(overlay.sensorHeight / 2),
           overlay.center, '#ffff00');
       if (overlay.showMin)
         drawTemperaturePoint(context, overlay, width, height,

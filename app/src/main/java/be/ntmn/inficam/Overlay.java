@@ -22,7 +22,7 @@ public class Overlay {
 	public static class MinMaxAvgCet {
 
 		float min, max, avg, center;
-		int min_x, min_y, max_x, max_y;
+		int min_x, min_y, max_x, max_y, center_x, center_y;
 	}
 
 	public static class Data {
@@ -125,7 +125,12 @@ public class Overlay {
 			}
 		}
 		out.avg /= (right - left) * (bottom - top);
-		out.center = temp[(bottom-top)/2 * stride + (right-left)/2];
+		/* The rectangle coordinates are absolute sensor coordinates. Keep the sampled
+		 * center pixel with its value so zoomed/cropped measurements and their marker
+		 * can never use different coordinate spaces. */
+		out.center_x = left + (right - left) / 2;
+		out.center_y = top + (bottom - top) / 2;
+		out.center = temp[out.center_y * stride + out.center_x];
 
 		//Avoid propagating bad floats
 		if (isNaN(out.min)) out.min = Util.ABSOLUTE_ZERO;
@@ -159,9 +164,9 @@ public class Overlay {
 		paintTextOutline.setStrokeWidth(woutline * w);
 		paintTextOutline.setTextSize(textsize * w);
 
-		if (d.showCenter) { // TODO this is off by a pixel and we should check the other points too
+		if (d.showCenter) {
 			paint.setColor(Color.rgb(255, 255, 0)); // Yellow.
-			drawTPoint(cvs, d, d.fi.width / 2, d.fi.height / 2, d.mmac.center);
+			drawTPoint(cvs, d, d.mmac.center_x, d.mmac.center_y, d.mmac.center);
 		}
 
 		if (d.showMin) {
