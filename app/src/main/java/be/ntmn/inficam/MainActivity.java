@@ -20,6 +20,7 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.Canvas;
+import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManager;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
@@ -39,8 +40,13 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.EditText;
+import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.HorizontalScrollView;
 import android.text.InputType;
 import android.widget.LinearLayout;
+import android.widget.TableLayout;
+import android.widget.TableRow;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
@@ -105,13 +111,25 @@ public class MainActivity extends BaseActivity {
 	private SliderDouble rangeSlider;
 	private FrameLayout cameraContainer;
 	private ImageButton buttonPhoto, buttonShare, buttonWebView, buttonTimeChart;
+	private CalibrationController spatialCalibrationController;
+	private InfiCamThermalCameraHal thermalCameraHal;
+	private AlertDialog spatialCalibrationProgressDialog;
 	private TimeChartView timeChart;
+	private ChartTraceConfig chartTraceConfig;
+	private AlertDialog chartPropertiesDialog;
+	private CheckBox[] chartTraceShowBoxes = new CheckBox[0];
+	private EditText[] chartTraceNameFields = new EditText[0];
+	private EditText[] chartTraceWidthFields = new EditText[0];
+	private Button[] chartTraceColorButtons = new Button[0];
 	private volatile int timeChartState = 0; // 0 hidden, 1 recording, 2 stopped/visible
 	private static final int TIME_CHART_HEIGHT_DP = 300;
 	private static final int TIME_CHART_BOTTOM_GAP_DP = 9;
 	private static final int TIME_CHART_BUTTON_RESERVE_DP = 72;
 	private TextView webViewAddress;
 	private WebViewServer webViewServer;
+	private Esp32BridgeManager esp32BridgeManager;
+	private volatile boolean useEsp32Connection;
+	private boolean esp32PermissionRequestPending;
 	private long lastWebCaptureNs;
 	private static final long WEB_FRAME_INTERVAL_NS = 40000000L; // target camera rate: 25 FPS
 	private static final String WEB_HEX = "0123456789abcdef";
@@ -397,6 +415,12 @@ public class MainActivity extends BaseActivity {
 						latestTempBuffer = new float[temp.length];
 					System.arraycopy(temp, 0, latestTempBuffer, 0, temp.length);
 					applyLocalCorrection(latestTempBuffer);
+					/* The committed additive FPN map is applied exactly once, before
+					 * measurements, analysis, rendering, Web Control and every export. While
+					 * autocalibration is collecting, the engine observes the uncorrected copy
+					 * first and then applies the previous valid map for normal display. */
+					if (spatialCalibrationController != null)
+						spatialCalibrationController.processFrame(latestTempBuffer);
 					copyFrameInfo(fi, latestFrameInfo);
 					overlayData.fi = latestFrameInfo;
 					overlayData.temp = latestTempBuffer;
@@ -574,6 +598,9 @@ public class MainActivity extends BaseActivity {
 				int width = infiCam.getWidth();
 				int height = infiCam.getHeight();
 				float[][] ranges = infiCam.getRanges();
+				InfiCamThermalCameraHal newHal = new InfiCamThermalCameraHal(infiCam, dev);
+				spatialCalibrationController.attachCamera(newHal, width, height);
+				thermalCameraHal = newHal;
 
 				runOnUiThreadSync(() -> {
 					if (!isCurrentConnection(token, conn))
@@ -1002,21 +1029,100 @@ public class MainActivity extends BaseActivity {
 			return;
 		if (webViewServer.isRunning()) {
 			webViewServer.stop();
+			if (esp32BridgeManager != null)
+				esp32BridgeManager.setWebServerPort(0);
 			webViewAddress.setVisibility(View.GONE);
 			buttonWebView.setColorFilter(null);
 			messageView.showMessage(R.string.msg_web_stopped);
 			return;
 		}
 		try {
-			String url = webViewServer.start();
-			webViewAddress.setText(url);
+			String url = webViewServer.start(useEsp32Connection);
+			if (useEsp32Connection) {
+				webViewAddress.setText(R.string.msg_esp_connecting);
+				if (esp32BridgeManager != null) {
+					esp32BridgeManager.setWebServerPort(webViewServer.getPort());
+					startEsp32BridgeWithPermission();
+				}
+			} else {
+				webViewAddress.setText(url);
+			}
 			webViewAddress.setVisibility(View.VISIBLE);
 			buttonWebView.setColorFilter(Color.RED);
-			messageView.showMessage(getString(R.string.msg_web_started, url));
+			if (useEsp32Connection)
+				messageView.showMessage(R.string.msg_esp_connecting);
+			else
+				messageView.showMessage(getString(R.string.msg_web_started, url));
 		} catch (IOException e) {
 			messageView.showMessage(R.string.msg_web_failed);
 			Log.w("inficam", "Unable to start Web View", e);
 		}
+	}
+
+	/** Called by SettingsMain; the disabled path intentionally retains legacy Web View behaviour. */
+	public void setUseEsp32Connection(boolean enabled) {
+		useEsp32Connection = enabled;
+		if (esp32BridgeManager == null)
+			return;
+		if (!enabled) {
+			esp32BridgeManager.setWebServerPort(0);
+			esp32BridgeManager.stop();
+			if (webViewServer != null && webViewServer.isRunning()) {
+				webViewAddress.setText(webViewServer.getUrl());
+				webViewAddress.setVisibility(View.VISIBLE);
+			}
+			return;
+		}
+		if (webViewServer != null && webViewServer.isRunning()) {
+			webViewAddress.setText(R.string.msg_esp_connecting);
+			webViewAddress.setVisibility(View.VISIBLE);
+			esp32BridgeManager.setWebServerPort(webViewServer.getPort());
+		}
+		if (activityStarted)
+			startEsp32BridgeWithPermission();
+	}
+
+	private void startEsp32BridgeWithPermission() {
+		if (!useEsp32Connection || esp32BridgeManager == null || esp32PermissionRequestPending)
+			return;
+		String[] requiredPermissions = null;
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+			requiredPermissions = new String[]{Manifest.permission.NEARBY_WIFI_DEVICES};
+		else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+			requiredPermissions = new String[]{Manifest.permission.ACCESS_COARSE_LOCATION,
+					Manifest.permission.ACCESS_FINE_LOCATION};
+		final String[] permissions = requiredPermissions;
+		boolean granted = true;
+		if (permissions != null) for (String permission : permissions)
+			granted &= checkPermission(permission);
+		if (permissions == null || granted) {
+			esp32BridgeManager.start();
+			return;
+		}
+		esp32PermissionRequestPending = true;
+		askPermissions(permissions, result -> {
+			esp32PermissionRequestPending = false;
+			if (result && useEsp32Connection && activityStarted)
+				esp32BridgeManager.start();
+			else if (!result)
+				messageView.showMessage(R.string.msg_esp_permission);
+		});
+	}
+
+	private void onEsp32BridgeState(Esp32BridgeManager.State state, String detail) {
+		handler.post(() -> {
+			if (!useEsp32Connection || webViewServer == null || !webViewServer.isRunning())
+				return;
+			webViewAddress.setVisibility(View.VISIBLE);
+			if (state == Esp32BridgeManager.State.CONNECTED) {
+				webViewAddress.setText(Esp32BridgeManager.PUBLIC_URL);
+				messageView.showMessage(getString(R.string.msg_esp_connected,
+						Esp32BridgeManager.PUBLIC_URL));
+			} else {
+				webViewAddress.setText(detail == null || detail.isEmpty() ?
+						getString(R.string.msg_esp_connecting) : detail);
+			}
+		});
 	}
 
 	private void handleWebCommand(String command, String value) {
@@ -1047,6 +1153,8 @@ public class MainActivity extends BaseActivity {
 				toggleTimeChart();
 			} else if ("chart_delete".equals(command)) {
 				deleteTimeChart();
+			} else if ("chart_trace".equals(command)) {
+				applyWebChartTrace(value);
 			} else if ("record_start".equals(command)) {
 				if (usbConnection != null && !recorder.isRecording())
 					startRecording(false);
@@ -1055,6 +1163,20 @@ public class MainActivity extends BaseActivity {
 					stopRecording();
 			}
 		});
+	}
+
+	private void applyWebChartTrace(String value) {
+		int first = value.indexOf('\t');
+		int second = first < 0 ? -1 : value.indexOf('\t', first + 1);
+		if (first <= 0 || second <= first + 1 || chartTraceConfig == null)
+			return;
+		String id = value.substring(0, first);
+		String field = value.substring(first + 1, second);
+		String fieldValue = value.substring(second + 1);
+		if (chartTraceConfig.update(id, field, fieldValue)) {
+			timeChart.setTraceStyles(chartTraceConfig.snapshot());
+			refreshChartPropertiesDialog();
+		}
 	}
 
 	private static void applyWebSetting(Settings target, String value) {
@@ -1323,6 +1445,220 @@ public class MainActivity extends BaseActivity {
 		updateTimeChartLayout();
 	}
 
+	private void showChartPropertiesDialog() {
+		if (chartTraceConfig == null || settingsMeasure == null)
+			return;
+		if (chartPropertiesDialog != null && chartPropertiesDialog.isShowing())
+			return;
+		TableLayout table = new TableLayout(this);
+		table.setPadding(dp(8), dp(4), dp(8), dp(4));
+		table.setStretchAllColumns(false);
+		TableRow header = new TableRow(this);
+		addChartTableHeader(header, R.string.chart_trace_name, 132);
+		addChartTableHeader(header, R.string.chart_line_width, 84);
+		addChartTableHeader(header, R.string.chart_color, 104);
+		addChartTableHeader(header, R.string.chart_show, 64);
+		table.addView(header);
+
+		ChartTraceConfig.Trace[] traces = chartTraceConfig.snapshot();
+		chartTraceShowBoxes = new CheckBox[traces.length];
+		chartTraceNameFields = new EditText[traces.length];
+		chartTraceWidthFields = new EditText[traces.length];
+		chartTraceColorButtons = new Button[traces.length];
+		for (int i = 0; i < traces.length; ++i) {
+			final int traceIndex = i;
+			ChartTraceConfig.Trace trace = traces[i];
+			TableRow row = new TableRow(this);
+			row.setGravity(Gravity.CENTER_VERTICAL);
+
+			EditText name = new EditText(this);
+			name.setSingleLine(true);
+			name.setText(trace.name);
+			name.setSelectAllOnFocus(true);
+			name.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+			name.setLayoutParams(chartCellParams(132));
+			name.setOnFocusChangeListener((view, focused) -> {
+				if (!focused) updateTraceProperty(traceIndex, "name", name.getText().toString());
+			});
+			name.setOnEditorActionListener((view, action, event) -> {
+				if (action == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
+					updateTraceProperty(traceIndex, "name", name.getText().toString());
+					name.clearFocus();
+					return true;
+				}
+				return false;
+			});
+			chartTraceNameFields[traceIndex] = name;
+			row.addView(name);
+
+			EditText width = new EditText(this);
+			width.setSingleLine(true);
+			width.setText(String.format(Locale.US, "%g", trace.lineWidth));
+			width.setSelectAllOnFocus(true);
+			width.setInputType(InputType.TYPE_CLASS_NUMBER |
+					InputType.TYPE_NUMBER_FLAG_DECIMAL);
+			width.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+			width.setLayoutParams(chartCellParams(84));
+			width.setOnFocusChangeListener((view, focused) -> {
+				if (!focused) updateTraceWidth(traceIndex, width);
+			});
+			width.setOnEditorActionListener((view, action, event) -> {
+				if (action == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
+					updateTraceWidth(traceIndex, width);
+					width.clearFocus();
+					return true;
+				}
+				return false;
+			});
+			chartTraceWidthFields[traceIndex] = width;
+			row.addView(width);
+
+			Button color = new Button(this);
+			color.setAllCaps(false);
+			color.setText(ChartTraceConfig.colorHex(trace.color));
+			color.setTextColor(contrastTextColor(trace.color));
+			color.setLayoutParams(chartCellParams(104));
+			styleTraceColorButton(color, trace.color);
+			color.setOnClickListener(view -> showTraceColorPicker(traceIndex, color));
+			chartTraceColorButtons[traceIndex] = color;
+			row.addView(color);
+
+			CheckBox show = new CheckBox(this);
+			show.setGravity(Gravity.CENTER);
+			show.setChecked(isTraceShown(traceIndex));
+			show.setLayoutParams(chartCellParams(64));
+			show.setOnCheckedChangeListener((view, checked) ->
+					setTraceShownFromProperties(traceIndex, checked));
+			chartTraceShowBoxes[traceIndex] = show;
+			row.addView(show);
+			table.addView(row);
+		}
+
+		HorizontalScrollView scroll = new HorizontalScrollView(this);
+		scroll.setFillViewport(true);
+		scroll.addView(table);
+		chartPropertiesDialog = new AlertDialog.Builder(this)
+				.setTitle(R.string.chart_properties)
+				.setView(scroll)
+				.setPositiveButton(android.R.string.ok, null)
+				.create();
+		chartPropertiesDialog.setOnDismissListener(dialog -> {
+			chartPropertiesDialog = null;
+			chartTraceShowBoxes = new CheckBox[0];
+			chartTraceNameFields = new EditText[0];
+			chartTraceWidthFields = new EditText[0];
+			chartTraceColorButtons = new Button[0];
+		});
+		chartPropertiesDialog.show();
+	}
+
+	private void addChartTableHeader(TableRow row, int textResource, int widthDp) {
+		TextView text = new TextView(this);
+		text.setText(textResource);
+		text.setGravity(Gravity.CENTER);
+		text.setPadding(dp(4), dp(8), dp(4), dp(8));
+		text.setLayoutParams(chartCellParams(widthDp));
+		row.addView(text);
+	}
+
+	private TableRow.LayoutParams chartCellParams(int widthDp) {
+		return new TableRow.LayoutParams(dp(widthDp), ViewGroup.LayoutParams.WRAP_CONTENT);
+	}
+
+	private void updateTraceWidth(int index, EditText input) {
+		updateTraceProperty(index, "width", input.getText().toString());
+		ChartTraceConfig.Trace[] traces = chartTraceConfig.snapshot();
+		if (index >= 0 && index < traces.length)
+			input.setText(String.format(Locale.US, "%g", traces[index].lineWidth));
+	}
+
+	private void updateTraceProperty(int index, String field, String value) {
+		ChartTraceConfig.Trace[] traces = chartTraceConfig.snapshot();
+		if (index < 0 || index >= traces.length)
+			return;
+		if (chartTraceConfig.update(traces[index].id, field, value)) {
+			timeChart.setTraceStyles(chartTraceConfig.snapshot());
+			refreshChartPropertiesDialog();
+		}
+	}
+
+	private void showTraceColorPicker(int index, Button swatch) {
+		ChartTraceConfig.Trace[] traces = chartTraceConfig.snapshot();
+		if (index < 0 || index >= traces.length)
+			return;
+		final int[] selected = {traces[index].color};
+		ChartColorPickerView picker = new ChartColorPickerView(this);
+		picker.setLayoutParams(new ViewGroup.LayoutParams(
+				ViewGroup.LayoutParams.MATCH_PARENT, dp(260)));
+		picker.setColor(selected[0]);
+		picker.setListener(color -> selected[0] = color);
+		new AlertDialog.Builder(this)
+				.setTitle(R.string.chart_pick_color)
+				.setView(picker)
+				.setPositiveButton(android.R.string.ok, (dialog, which) -> {
+					updateTraceProperty(index, "color", ChartTraceConfig.colorHex(selected[0]));
+					ChartTraceConfig.Trace updated = chartTraceConfig.snapshot()[index];
+					swatch.setText(ChartTraceConfig.colorHex(updated.color));
+					swatch.setTextColor(contrastTextColor(updated.color));
+					styleTraceColorButton(swatch, updated.color);
+				})
+				.setNegativeButton(android.R.string.cancel, null)
+				.show();
+	}
+
+	private void styleTraceColorButton(Button button, int color) {
+		GradientDrawable background = new GradientDrawable();
+		background.setColor(color);
+		background.setCornerRadius(dp(4));
+		background.setStroke(dp(1), Color.LTGRAY);
+		button.setBackground(background);
+	}
+
+	private static int contrastTextColor(int color) {
+		double luminance = Color.red(color) * 0.299 + Color.green(color) * 0.587 +
+				Color.blue(color) * 0.114;
+		return luminance > 150.0 ? Color.BLACK : Color.WHITE;
+	}
+
+	private boolean isTraceShown(int trace) {
+		synchronized (frameLock) {
+			return trace == ChartTraceConfig.MAX ? overlayData.showMax :
+					trace == ChartTraceConfig.MIN ? overlayData.showMin : overlayData.showCenter;
+		}
+	}
+
+	private void setTraceShownFromProperties(int trace, boolean shown) {
+		ChartTraceConfig.Trace[] traces = chartTraceConfig.snapshot();
+		if (trace >= 0 && trace < traces.length)
+			settingsMeasure.setFromWeb(traces[trace].measurementSetting,
+					Boolean.toString(shown));
+	}
+
+	private void refreshChartPropertiesDialog() {
+		if (chartPropertiesDialog == null || !chartPropertiesDialog.isShowing())
+			return;
+		ChartTraceConfig.Trace[] traces = chartTraceConfig.snapshot();
+		for (int i = 0; i < chartTraceShowBoxes.length && i < traces.length; ++i) {
+			EditText name = chartTraceNameFields[i];
+			if (name != null && !name.hasFocus() &&
+					!traces[i].name.contentEquals(name.getText()))
+				name.setText(traces[i].name);
+			EditText width = chartTraceWidthFields[i];
+			String widthText = String.format(Locale.US, "%g", traces[i].lineWidth);
+			if (width != null && !width.hasFocus() && !widthText.contentEquals(width.getText()))
+				width.setText(widthText);
+			Button color = chartTraceColorButtons[i];
+			if (color != null) {
+				color.setText(ChartTraceConfig.colorHex(traces[i].color));
+				color.setTextColor(contrastTextColor(traces[i].color));
+				styleTraceColorButton(color, traces[i].color);
+			}
+			CheckBox box = chartTraceShowBoxes[i];
+			if (box != null && box.isChecked() != isTraceShown(i))
+				box.setChecked(isTraceShown(i));
+		}
+	}
+
 	private int dp(float value) {
 		return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
 	}
@@ -1411,9 +1747,23 @@ public class MainActivity extends BaseActivity {
 		/* With a portrait chart the camera rises to the top control row. Keep the
 		 * palette maximum at the image edge and move the compact control strip just
 		 * far enough left that the two never overlap. */
-		if (buttonsLeft != null)
-			buttonsLeft.setTranslationX(!sideBySide && !landscape && timeChartState != 0 ?
-					-dp(48) : 0);
+		if (buttonsLeft != null) {
+			if (!sideBySide && !landscape && timeChartState != 0) {
+				/* Cap the shift against the laid-out position so
+				 * the first button always remains fully on screen. */
+				Runnable fitControls = () -> {
+					if (buttonsLeft == null || timeChartState == 0)
+						return;
+					float safeShift = Math.min(dp(48),
+							Math.max(0, buttonsLeft.getLeft() - dp(4)));
+					buttonsLeft.setTranslationX(-safeShift);
+				};
+				fitControls.run();
+				buttonsLeft.post(fitControls);
+			} else {
+				buttonsLeft.setTranslationX(0);
+			}
+		}
 		/* setLayoutParams() can refresh ConstraintLayout's child order.  Keep the
 		 * bottom controls above the chart after every such refresh. */
 		if (buttonsLeft != null)
@@ -1428,6 +1778,110 @@ public class MainActivity extends BaseActivity {
 		overTempLockoutActive = true;
 		messageView.showMessage(R.string.msg_overtemp);
 		infiCam.lockShutter();
+	}
+
+	void showSpatialCalibrationDialog() {
+		if (spatialCalibrationController == null ||
+				!spatialCalibrationController.isCameraReady()) {
+			messageView.showMessage(R.string.msg_no_frame);
+			return;
+		}
+		if (spatialCalibrationController.isActive()) {
+			showSpatialCalibrationProgress(spatialCalibrationController.getState(),
+					0.0f, "Autocalibration is running…");
+			return;
+		}
+		String shutterInstruction = getString(
+				spatialCalibrationController.canHoldShutterClosed() ?
+						R.string.spatial_calibration_shutter :
+						R.string.spatial_calibration_cover);
+		new AlertDialog.Builder(this)
+				.setTitle(R.string.spatial_calibration_title)
+				.setMessage(getString(R.string.spatial_calibration_intro) +
+						"\n\n" + shutterInstruction)
+				.setPositiveButton("Start", (dialog, which) -> {
+					spatialCalibrationController.start();
+					showSpatialCalibrationProgress(CalibrationController.State.PREPARING,
+							0.0f, "Preparing spatial calibration…");
+				})
+				.setNegativeButton("Cancel", null)
+				.show();
+	}
+
+	private void onSpatialCalibrationState(CalibrationController.State state,
+			float progress, String detail) {
+		handler.post(() -> handleSpatialCalibrationState(state, progress, detail));
+	}
+
+	private void handleSpatialCalibrationState(CalibrationController.State state,
+			float progress, String detail) {
+		boolean active = state == CalibrationController.State.PREPARING ||
+				state == CalibrationController.State.COLLECTING ||
+				state == CalibrationController.State.VALIDATING ||
+				state == CalibrationController.State.COMMITTING;
+		setSpatialCalibrationControls(active);
+		if (active) {
+			showSpatialCalibrationProgress(state, progress, detail);
+			return;
+		}
+		dismissSpatialCalibrationProgress();
+		if (state == CalibrationController.State.COMPLETED ||
+				state == CalibrationController.State.CANCELLED ||
+				state == CalibrationController.State.FAILED) {
+			messageView.showMessage(detail);
+		}
+	}
+
+	private void setSpatialCalibrationControls(boolean active) {
+		if (active) {
+			setViewTreeEnabled(buttonsLeft, false);
+			setViewTreeEnabled(buttonsRight, false);
+			setViewTreeEnabled(rangeSlider, false);
+			if (cameraView != null)
+				cameraView.setEnabled(false);
+			if (dialogBackground != null && dialogBackground.getVisibility() == View.VISIBLE)
+				hideSettingsDialog();
+		} else if (!calibrationUiActive) {
+			setViewTreeEnabled(buttonsLeft, true);
+			setViewTreeEnabled(buttonsRight, true);
+			setViewTreeEnabled(rangeSlider, true);
+			if (cameraView != null)
+				cameraView.setEnabled(true);
+		}
+	}
+
+	private void showSpatialCalibrationProgress(CalibrationController.State state,
+			float progress, String detail) {
+		String message = detail + "\n" + Math.round(Math.max(0.0f,
+				Math.min(1.0f, progress)) * 100.0f) + "%";
+		if (spatialCalibrationProgressDialog == null ||
+				!spatialCalibrationProgressDialog.isShowing()) {
+			spatialCalibrationProgressDialog = new AlertDialog.Builder(this)
+					.setTitle(R.string.spatial_calibration_title)
+					.setMessage(message)
+					.setNegativeButton("Cancel", (dialog, which) -> {
+						if (spatialCalibrationController != null)
+							spatialCalibrationController.cancel();
+					})
+					.create();
+			spatialCalibrationProgressDialog.setCanceledOnTouchOutside(false);
+			spatialCalibrationProgressDialog.setOnCancelListener(dialog -> {
+				if (spatialCalibrationController != null)
+					spatialCalibrationController.cancel();
+			});
+			spatialCalibrationProgressDialog.show();
+		} else {
+			spatialCalibrationProgressDialog.setMessage(message);
+		}
+	}
+
+	private void dismissSpatialCalibrationProgress() {
+		if (spatialCalibrationProgressDialog != null) {
+			spatialCalibrationProgressDialog.setOnCancelListener(null);
+			if (spatialCalibrationProgressDialog.isShowing())
+				spatialCalibrationProgressDialog.dismiss();
+			spatialCalibrationProgressDialog = null;
+		}
 	}
 
 	@Override
@@ -1450,8 +1904,13 @@ public class MainActivity extends BaseActivity {
 		});
 
 		setContentView(R.layout.activity_main);
+		chartTraceConfig = new ChartTraceConfig(getApplicationContext());
 		cameraView = findViewById(R.id.cameraView);
 		messageView = findViewById(R.id.message);
+		spatialCalibrationController = new CalibrationController(
+				new be.ntmn.libinficam.SpatialCalibrationEngine(),
+				new SpatialCalibrationStore(getApplicationContext()),
+				this::onSpatialCalibrationState);
 		surfaceMuxer = new SurfaceMuxer(this);
 
 		/* Create and set up the InputSurface for thermal image, imode setting is not final. */
@@ -1474,6 +1933,8 @@ public class MainActivity extends BaseActivity {
 		webViewServer.setCommandHandler(this::handleWebCommand);
 		webViewServer.setStateProvider(this::buildWebStateJson);
 		webViewServer.setVideoProvider(this::openWebVideo);
+		esp32BridgeManager = new Esp32BridgeManager(getApplicationContext(),
+				this::onEsp32BridgeState);
 
 		/* We use it later. */
 		videoSurface = new SurfaceMuxer.InputSurface(surfaceMuxer);
@@ -1576,6 +2037,8 @@ public class MainActivity extends BaseActivity {
 		buttonWebView.setOnClickListener(view -> toggleWebView());
 
 		timeChart = findViewById(R.id.timeChart);
+		timeChart.setTraceStyles(chartTraceConfig.snapshot());
+		timeChart.setOnClickListener(view -> showChartPropertiesDialog());
 		cameraContainer = findViewById(R.id.cameraContainer);
 		buttonTimeChart = findViewById(R.id.buttonTimeChart);
 		buttonTimeChart.setOnClickListener(view -> toggleTimeChart());
@@ -1731,6 +2194,11 @@ public class MainActivity extends BaseActivity {
 	protected void onStop() {
 		activityStarted = false;
 		handler.removeCallbacks(reconnectRunnable);
+		if (chartPropertiesDialog != null && chartPropertiesDialog.isShowing())
+			chartPropertiesDialog.dismiss();
+		if (spatialCalibrationController != null)
+			spatialCalibrationController.cancel();
+		dismissSpatialCalibrationProgress();
 		if (imgCompressThread != null) {
 			imgCompressThread.shutdown();
 			imgCompressThread = null;
@@ -1742,6 +2210,10 @@ public class MainActivity extends BaseActivity {
 		disconnect();
 		if (webViewServer != null)
 			webViewServer.stop();
+		if (esp32BridgeManager != null) {
+			esp32BridgeManager.setWebServerPort(0);
+			esp32BridgeManager.stop();
+		}
 		if (webViewAddress != null)
 			webViewAddress.setVisibility(View.GONE);
 		if (buttonWebView != null)
@@ -1752,9 +2224,17 @@ public class MainActivity extends BaseActivity {
 
 	@Override
 	protected void onDestroy() {
+		if (spatialCalibrationController != null) {
+			spatialCalibrationController.close();
+			spatialCalibrationController = null;
+		}
 		if (outWeb != null) {
 			outWeb.release();
 			outWeb = null;
+		}
+		if (esp32BridgeManager != null) {
+			esp32BridgeManager.close();
+			esp32BridgeManager = null;
 		}
 		surfaceMuxer.release();
 		super.onDestroy();
@@ -1990,6 +2470,9 @@ public class MainActivity extends BaseActivity {
 		overTempLockoutActive = false;
 		stopRecording();
 		disconnecting = true;
+		if (spatialCalibrationController != null)
+			spatialCalibrationController.detachCamera();
+		thermalCameraHal = null;
 		UsbDeviceConnection oldConnection;
 		synchronized (usbLifecycleLock) {
 			oldConnection = usbConnection;
@@ -2171,18 +2654,27 @@ public class MainActivity extends BaseActivity {
 		synchronized (frameLock) {
 			overlayData.showCenter = value;
 		}
+		if (timeChart != null)
+			timeChart.setTraceVisibility(ChartTraceConfig.CENTER, value);
+		refreshChartPropertiesDialog();
 	}
 
 	public void setShowMax(boolean value) {
 		synchronized (frameLock) {
 			overlayData.showMax = value;
 		}
+		if (timeChart != null)
+			timeChart.setTraceVisibility(ChartTraceConfig.MAX, value);
+		refreshChartPropertiesDialog();
 	}
 
 	public void setShowMin(boolean value) {
 		synchronized (frameLock) {
 			overlayData.showMin = value;
 		}
+		if (timeChart != null)
+			timeChart.setTraceVisibility(ChartTraceConfig.MIN, value);
+		refreshChartPropertiesDialog();
 	}
 
 	public void setShowPalette(boolean value) {

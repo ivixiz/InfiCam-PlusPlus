@@ -16,6 +16,9 @@
 	<string name="msg_web_started">Web View: %s</string>
 	<string name="msg_web_stopped">Web View stopped.</string>
 	<string name="msg_web_failed">Failed to start Web View.</string>
+	<string name="msg_esp_connecting">Connecting Web Control through InfiCam ESP32…</string>
+	<string name="msg_esp_connected">ESP32 Web Control: %s</string>
+	<string name="msg_esp_permission">Nearby Wi-Fi permission is required for the ESP32 bridge.</string>
 	<string name="msg_zoom">Zoom: %d%%</string>
 	<string name="msg_overtemp">Warning! Do not point at very hot objects! (Tap shutter button to unlock)</string>
 
@@ -39,6 +42,16 @@
 	<string name="btn_share">Share</string>
 	<string name="btn_web_view">Web View</string>
 	<string name="btn_time_chart">Time chart</string>
+	<string name="chart_properties">Chart properties</string>
+	<string name="chart_trace_name">Trace name</string>
+	<string name="chart_line_width">Line width</string>
+	<string name="chart_color">Color</string>
+	<string name="chart_show">Show</string>
+	<string name="chart_pick_color">Select trace color</string>
+	<string name="spatial_calibration_title">Spatial fixed-pattern autocalibration</string>
+	<string name="spatial_calibration_intro">Autocalibration will take approximately 10 minutes. Keep the camera stationary at room temperature (20–25 °C).</string>
+	<string name="spatial_calibration_cover">Completely cover the lens with a uniform opaque cover and keep it covered until calibration finishes.</string>
+	<string name="spatial_calibration_shutter">The camera shutter will close automatically and remain closed until calibration finishes.</string>
 
 	<string name="dialog_set_main">Settings</string>
 	<string name="dialog_set_therm">Thermometry Settings</string>
@@ -70,6 +83,8 @@
 	<string name="set_chart_sample_rate">Chart sample rate (seconds)</string>
 	<string name="set_chart_average_samples">Average per sample:</string>
 	<string name="set_export_chart_separately">Export chart separately</string>
+	<string name="set_use_esp32_connection">Use ESP-32 for connection</string>
+	<string name="set_spatial_autocalibration">Spatial fixed-pattern autocalibration…</string>
 	<string name="set_defaults">Reset to defaults</string>
 
 	<string name="set_show_min">Show min temperature</string>

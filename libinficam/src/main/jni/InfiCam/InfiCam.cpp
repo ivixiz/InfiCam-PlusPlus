@@ -265,6 +265,9 @@ int InfiCam::stream_start(frame_callback_t *cb) {
 
 void InfiCam::stream_stop() {
 	if(!is_ready) { return; } //not running
+	/* A manual P2 shutter switch survives ordinary stream state.  Always try to
+	 * reopen it while the USB handle is still valid, including detach/recovery. */
+	release_shutter_after_spatial_calibration();
 	is_ready = false;
 	nonraw_frames_ready = false;
 	nonraw_table_ready = false;
@@ -278,6 +281,7 @@ void InfiCam::stream_stop() {
 	pthread_mutex_lock(&shutter_mutex);
 	range_validation_holds_shutter = false;
 	keep_shutter_closed = false;
+	spatial_calibration_shutter_held = false;
 	pthread_mutex_unlock(&shutter_mutex);
 	pthread_mutex_lock(&cal_mutex);
 	pthread_cond_broadcast(&cal_request);
@@ -401,6 +405,79 @@ void InfiCam::unlock_shutter(){
 	pthread_mutex_lock(&shutter_mutex);
 	keep_shutter_closed = false;
 	pthread_mutex_unlock(&shutter_mutex);
+}
+
+bool InfiCam::can_hold_shutter_for_spatial_calibration(){
+	/* The P2 backend exposes SDK_USB_IR's independent manual shutter switch;
+	 * raw InfiCam-compatible sensors use the existing periodically refreshed
+	 * zoom-absolute shutter command. */
+	return is_ready.load() && (is_p2_pro || infiframe != nullptr);
+}
+
+bool InfiCam::hold_shutter_for_spatial_calibration(){
+	if(!is_ready.load() || !can_hold_shutter_for_spatial_calibration()){
+		return false;
+	}
+	if(spatial_calibration_shutter_held.load()){
+		return true;
+	}
+	if(is_p2_pro){
+		pthread_mutex_lock(&command_mutex);
+		const bool success = p2pro_standard_command(P2_CMD_SHUTTER_MANUAL_SWITCH,
+				P2_SHUTTER_CLOSE);
+		pthread_mutex_unlock(&command_mutex);
+		spatial_calibration_shutter_held = success;
+		if(success) LOGI("P2 Pro manual shutter held closed for spatial calibration.\n");
+		else LOGE("Unable to hold the P2 Pro manual shutter closed.\n");
+		return success;
+	}
+	/* Send the first command synchronously so a USB/control-transfer failure is
+	 * reported to the controller before collection starts. The existing shutter
+	 * thread then refreshes the command while keep_shutter_closed is true. */
+	pthread_mutex_lock(&shutter_mutex);
+	keep_shutter_closed = true;
+	pthread_mutex_lock(&command_mutex);
+	const bool success = dev.set_zoom_abs(CMD_SHUTTER) == 0;
+	pthread_mutex_unlock(&command_mutex);
+	if(success){
+		spatial_calibration_shutter_held = true;
+		pthread_cond_signal(&shutter_request);
+	} else {
+		keep_shutter_closed = false;
+	}
+	pthread_mutex_unlock(&shutter_mutex);
+	return success;
+}
+
+bool InfiCam::release_shutter_after_spatial_calibration(){
+	if(!spatial_calibration_shutter_held.exchange(false)){
+		return true;
+	}
+	if(is_p2_pro){
+		if(!is_ready.load()){
+			return false;
+		}
+		pthread_mutex_lock(&command_mutex);
+		const bool success = p2pro_standard_command(P2_CMD_SHUTTER_MANUAL_SWITCH,
+				P2_SHUTTER_OPEN);
+		pthread_mutex_unlock(&command_mutex);
+		if(success) LOGI("P2 Pro manual shutter restored after spatial calibration.\n");
+		else {
+			/* Keep the ownership flag set so the controller or stream teardown can
+			 * retry while the USB handle is still usable. */
+			spatial_calibration_shutter_held = true;
+			LOGE("Unable to restore the P2 Pro manual shutter.\n");
+		}
+		return success;
+	}
+	pthread_mutex_lock(&shutter_mutex);
+	keep_shutter_closed = false;
+	pthread_mutex_unlock(&shutter_mutex);
+	return true;
+}
+
+bool InfiCam::is_streaming(){
+	return is_ready.load();
 }
 
 

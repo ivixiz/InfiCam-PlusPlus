@@ -42,6 +42,11 @@ class InfiCam {
 	 * (high-temperature range). */
 	static const uint16_t P2_CMD_PROP_TPD_PARAMS = 0x8514;
 	static const uint16_t P2_CMD_OOC_B_UPDATE = 0xc10d;
+	/* SDK_USB_IR's shutter_manual_switch command.  Its single-byte argument is
+	 * 0 for OPEN and 1 for CLOSE. */
+	static const uint16_t P2_CMD_SHUTTER_MANUAL_SWITCH = 0x420c;
+	static const uint8_t P2_SHUTTER_OPEN = 0;
+	static const uint8_t P2_SHUTTER_CLOSE = 1;
 	static const uint16_t P2_CMD_SET = 0x4000;
 	static const uint16_t P2_TPD_PROP_GAIN_SEL = 5;
 	static const uint16_t P2_GAIN_LOW = 0;
@@ -101,6 +106,7 @@ private:
 	pthread_mutex_t shutter_mutex{};
 	pthread_cond_t shutter_request{};
 	bool keep_shutter_closed = false;
+	std::atomic_bool spatial_calibration_shutter_held = false;
 	static void * shutter_thread_func(void *arg);
 
 
@@ -143,6 +149,10 @@ public:
 	void setSmartCalibrationEnabled(bool enabled);
 	void lock_shutter();
 	void unlock_shutter();
+	bool can_hold_shutter_for_spatial_calibration();
+	bool hold_shutter_for_spatial_calibration();
+	bool release_shutter_after_spatial_calibration();
+	bool is_streaming();
 
 	std::vector<std::array<float,2>> get_ranges();
 	void set_range(const int range);

@@ -53,6 +53,54 @@ scale.
 
 <img width="2400" height="1080" alt="Screenshot_20260830-141904104" src="https://github.com/user-attachments/assets/55b56047-8df2-4c3c-97e3-dd452d3f2e79" />
 
+### Spatial fixed-pattern autocalibration
+
+The **Settings → Spatial fixed-pattern autocalibration…** action creates a
+per-camera additive offset map to reduce persistent pixel-to-pixel temperature
+differences (spatial FPN).
+Calibration takes approximately ten minutes at a stable room temperature of
+20–25 °C. Cameras whose shutter can safely remain closed use it automatically.
+For P2 Pro the app uses the official SDK's independent manual shutter switch,
+keeps the internal shutter closed for the acquisition, and restores it on success,
+cancellation, lifecycle teardown, timeout, or USB recovery. Cameras without a
+safe long-duration shutter hold ask for a uniform opaque lens cover instead.
+
+The first two minutes are reserved for thermal stabilization. The remaining frames
+are processed online: every frame is referenced to the median of all finite thermal
+pixels, then per-pixel residuals are accumulated with robust transient/outlier
+rejection. No frames are retained in memory. This is an offset-only procedure at one
+temperature; it intentionally does not attempt a gain calibration.
+
+The offset map is applied before min/max/center measurements, Time Chart sampling,
+rendering, Web Control, pictures, video, and sharing. Profiles are keyed by the
+physical USB serial when available and loaded automatically after reconnect. Saving
+is transactional: an existing valid profile remains active until a candidate has
+passed validation and its replacement has been atomically committed. Cancellation,
+frame timeout, USB loss, app shutdown, and validation errors discard the candidate
+and preserve the previous profile.
+
+The hot path is implemented as an allocation-free native CPU pass with preallocated
+buffers. GPU/Vulkan processing is not required for this stage.
+
+### Optional ESP32-S3 USB Web Control bridge
+
+**Settings → Use ESP-32 for connection** enables a dedicated local connection for
+Web Control. The phone joins the `InfiCam-Bridge` access point and registers the
+running Web Control server with the ESP32-S3. A PC connected to the ESP USB-OTG
+port receives a CDC-NCM Ethernet interface and can then open the fixed address
+**http://192.168.7.1**. The bridge forwards HTTP, controls, state, MJPEG and export
+downloads as TCP bytes; it does not decode or re-encode camera data.
+
+Android displays its nearby Wi-Fi chooser on the first connection. Enable the
+setting, approve `InfiCam-Bridge`, and start Web Control. The fixed URL is shown in
+the app only after registration succeeds. Both the phone registration and the
+Wi-Fi network request recover automatically after a temporary link loss. With the
+setting disabled, Web Control retains its normal local-network address and
+behaviour.
+
+The ESP-IDF firmware and build instructions are in the adjacent local project
+`~/Documents/Code/Rust/espbridge`.
+
 ### Pictures, video, and sharing
 
 - The Share button captures the current thermal view and opens the Android share

@@ -151,6 +151,13 @@ public class InfiCam {
 	public native void lockShutter();
 
 	public native void unlockShutter();
+	/** Whether this backend can safely keep its shutter closed for a long acquisition. */
+	public native boolean canHoldShutterForSpatialCalibration();
+	/** Close and hold the shutter, returning false if the first hardware command fails. */
+	public native boolean holdShutterForSpatialCalibration();
+	/** Restore the shutter state after spatial calibration. */
+	public native boolean releaseShutterAfterSpatialCalibration();
+	public native boolean isStreaming();
 
 	public native void calibrate();
 	public native void calibrateBlocking();

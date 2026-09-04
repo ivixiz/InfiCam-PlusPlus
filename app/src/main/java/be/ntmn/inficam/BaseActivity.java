@@ -95,14 +95,22 @@ public class BaseActivity extends AppCompatActivity {
 	}
 
 	public void askPermission(String perm, PermissionCallback callback) {
-		if (checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED) {
+		askPermissions(new String[]{perm}, callback);
+	}
+
+	public void askPermissions(String[] permissions, PermissionCallback callback) {
+		boolean granted = true;
+		for (String permission : permissions) {
+			if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+				granted = false;
+				break;
+			}
+		}
+		if (granted) {
 			callback.onPermission(true);
 		} else {
 			permissionCallbacks.add(callback);
-			requestPermissions(
-				new String[]{perm},
-				permissionCallbacks.size()
-			);
+			requestPermissions(permissions, permissionCallbacks.size());
 		}
 	}
 
@@ -116,7 +124,10 @@ public class BaseActivity extends AppCompatActivity {
 		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 		try {
 			PermissionCallback cb = permissionCallbacks.remove(requestCode - 1);
-			cb.onPermission(grantResults[0] == PackageManager.PERMISSION_GRANTED);
+			boolean granted = grantResults.length != 0;
+			for (int result : grantResults)
+				granted &= result == PackageManager.PERMISSION_GRANTED;
+			cb.onPermission(granted);
 		} catch (Exception e) {
 			e.printStackTrace(); /* Sometimes we get two calls, idk why... */
 		}

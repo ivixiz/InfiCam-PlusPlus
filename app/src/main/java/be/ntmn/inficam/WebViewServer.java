@@ -84,9 +84,14 @@ public final class WebViewServer {
 	public void setVideoProvider(VideoProvider provider) { videoProvider = provider; }
 
 	public synchronized String start() throws IOException {
+		return start(false);
+	}
+
+	/** Starts before a local address exists when the ESP bridge is still joining its SoftAP. */
+	public synchronized String start(boolean allowNoLocalAddress) throws IOException {
 		if (running)
 			return getUrl();
-		if (getLocalIp() == null)
+		if (!allowNoLocalAddress && getLocalIp() == null)
 			throw new IOException("No local network address");
 		IOException lastError = null;
 		for (int candidate = FIRST_PORT; candidate <= LAST_PORT; ++candidate) {
@@ -148,6 +153,8 @@ public final class WebViewServer {
 	public boolean isRunning() {
 		return running;
 	}
+
+	public int getPort() { return running ? port : 0; }
 
 	/** Drop a stale camera image while preserving connected browser sessions. */
 	public void resetFrames() {

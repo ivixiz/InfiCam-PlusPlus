@@ -256,6 +256,12 @@ public class SettingsMain extends Settings {
 				new SettingBool("export_chart_separately", R.string.set_export_chart_separately, false) {
 					@Override void onSet(boolean value) { act.setExportChartSeparately(value); }
 				},
+				new SettingBool("use_esp32_connection", R.string.set_use_esp32_connection, false) {
+					@Override void onSet(boolean value) { act.setUseEsp32Connection(value); }
+				},
+				new SettingButton(R.string.set_spatial_autocalibration) {
+					@Override void onPress() { act.showSpatialCalibrationDialog(); }
+				},
 				settingDefaults,
 		};
 	}

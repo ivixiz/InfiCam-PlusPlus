@@ -43,47 +43,66 @@
     #battery-fill { width: 0; height: 100%; background: #4cd964; transition: width .2s; }
     #battery-charge { display: none; color: #ffd400; font-size: 15px; line-height: 1; }
     #viewer {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      align-items: stretch;
-      width: min(98vw, 1600px);
-      margin: 0 auto;
-      background: #000;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        align-items: stretch;
+        width: min(98vw, 1600px);
+        margin: 0 auto;
+        background: #000;
+
+        max-height: calc(100vh - 110px);
+        overflow: hidden;
     }
+
     #viewer.chart-on {
-      grid-template-columns: minmax(0, 62fr) minmax(320px, 38fr);
+        grid-template-columns: minmax(0, 62fr) minmax(320px, 38fr);
     }
+
     #camera-wrap {
-      position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 0;
-      min-height: 0;
-      overflow: hidden;
-      background: #000;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+        background: #000;
     }
+
     #live {
-      display: block;
-      width: 100%;
-      height: auto;
-      min-width: 0;
-      max-height: calc(100vh - 110px);
-      object-fit: contain;
-      background: #000;
+        display: block;
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+        object-fit: contain;
+        background: #000;
+    }
+
+    #chart-wrap {
+        display: none;
+        position: relative;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+        background: #fff;
+    }
+
+    #viewer.chart-on #chart-wrap {
+        display: block;
+    }
+
+    #chart {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
     }
     #thermal-overlay {
       position: absolute;
       pointer-events: none;
     }
-    #chart-wrap {
-      display: none;
-      min-width: 0;
-      min-height: 420px;
-      background: #fff;
-    }
     #viewer.chart-on #chart-wrap { display: block; }
-    #chart { display: block; width: 100%; height: 100%; }
     #controls-scroll {
       width: 100%;
       overflow-x: auto;
@@ -173,6 +192,15 @@
     .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 16px; margin-top: 12px; }
     .settings-grid label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .settings-grid input:not([type=checkbox]), .settings-grid select { width: min(150px, 48%); }
+    .trace-table { width: 100%; margin-top: 12px; border-collapse: collapse; }
+    .trace-table th, .trace-table td { padding: 7px 6px; border-bottom: 1px solid #555; }
+    .trace-table th { color: #ccc; font-size: 13px; }
+    .trace-table input[type=text] { width: 100%; min-width: 90px; }
+    .trace-table input[type=number] { width: 72px; }
+    .trace-table input[type=color] {
+      width: 58px; height: 32px; padding: 2px; border: 1px solid #888; cursor: pointer;
+    }
+    .trace-table td:last-child, .trace-table th:last-child { text-align: center; }
     #status { min-height: 1.2em; margin-bottom: 5px; color: #bbb; font-size: 13px; }
     @media (max-width: 760px) {
       #viewer.chart-on { grid-template-columns: minmax(0, 1fr); }
@@ -283,6 +311,16 @@
       </div>
     </div>
   </div>
+
+  <div id="chart-properties-modal" class="modal" onclick="modalBackdrop(event)">
+    <div class="modal-card">
+      <div class="modal-head"><h3>Chart Properties</h3><button onclick="closeModal('chart-properties-modal')">Close</button></div>
+      <table class="trace-table">
+        <thead><tr><th>Trace name</th><th>Line width</th><th>Color</th><th>Show</th></tr></thead>
+        <tbody id="trace-table-body"></tbody>
+      </table>
+    </div>
+  </div>
   <script>
     'use strict';
 
@@ -310,7 +348,13 @@
     const batteryFill = document.getElementById('battery-fill');
     const batteryCharge = document.getElementById('battery-charge');
     const batteryText = document.getElementById('battery-text');
+    const traceTableBody = document.getElementById('trace-table-body');
     const data = { generation: -1, max: [], min: [], center: [] };
+    const defaultTraces = [
+      { id: 'max', measurement: 'showmax', name: 'Tmax', lineWidth: 2, color: '#ff0000', show: true },
+      { id: 'min', measurement: 'showmin', name: 'Tmin', lineWidth: 2, color: '#0000ff', show: true },
+      { id: 'center', measurement: 'showcenter', name: 'Tcenter', lineWidth: 2, color: '#ff0000', show: true }
+    ];
     let meta = {
       state: 0, intervalNs: 100000000, unit: 0,
       showMax: false, showMin: false, showCenter: false,
@@ -381,6 +425,7 @@
         setSyncedValue(element, update.settings[element.dataset.setting]));
       if (update.measurement) document.querySelectorAll('[data-measurement]').forEach(element =>
         setSyncedValue(element, update.measurement[element.dataset.measurement]));
+      updateTraceTable(Array.isArray(update.traces) ? update.traces : defaultTraces);
       if (update.thermometry) {
         thermometryButton.disabled = !update.thermometry.available;
         const ranges = Array.isArray(update.thermometry.ranges) ? update.thermometry.ranges : [];
@@ -395,6 +440,54 @@
         }
         document.querySelectorAll('[data-thermometry]').forEach(element =>
           setSyncedValue(element, update.thermometry[element.dataset.thermometry]));
+      }
+    }
+
+    function sendTraceProperty(id, field, value) {
+      return sendCommand('chart_trace', id + '\t' + field + '\t' + value);
+    }
+
+    function updateTraceTable(traces) {
+      const signature = traces.map(trace => trace.id).join('\n');
+      if (traceTableBody.dataset.signature !== signature) {
+        traceTableBody.dataset.signature = signature;
+        traceTableBody.replaceChildren(...traces.map(trace => {
+          const row = document.createElement('tr');
+
+          const nameCell = document.createElement('td');
+          const name = document.createElement('input');
+          name.type = 'text'; name.maxLength = 48; name.dataset.field = 'name';
+          name.addEventListener('change', () => sendTraceProperty(trace.id, 'name', name.value));
+          nameCell.appendChild(name); row.appendChild(nameCell);
+
+          const widthCell = document.createElement('td');
+          const width = document.createElement('input');
+          width.type = 'number'; width.min = '.25'; width.max = '16'; width.step = '.25';
+          width.dataset.field = 'lineWidth';
+          width.addEventListener('change', () => sendTraceProperty(trace.id, 'width', width.value));
+          widthCell.appendChild(width); row.appendChild(widthCell);
+
+          const colorCell = document.createElement('td');
+          const color = document.createElement('input');
+          color.type = 'color'; color.dataset.field = 'color';
+          color.addEventListener('change', () => sendTraceProperty(trace.id, 'color', color.value));
+          colorCell.appendChild(color); row.appendChild(colorCell);
+
+          const showCell = document.createElement('td');
+          const show = document.createElement('input');
+          show.type = 'checkbox'; show.dataset.field = 'show';
+          show.addEventListener('change', () =>
+            sendCommand('measurement', trace.measurement + '=' + show.checked));
+          showCell.appendChild(show); row.appendChild(showCell);
+          row.dataset.trace = trace.id;
+          return row;
+        }));
+      }
+      for (const trace of traces) {
+        const row = Array.from(traceTableBody.rows).find(item => item.dataset.trace === trace.id);
+        if (!row) continue;
+        for (const input of row.querySelectorAll('input'))
+          setSyncedValue(input, trace[input.dataset.field]);
       }
     }
 
@@ -435,6 +528,29 @@
       });
     }
 
+    function updateViewerSize() {
+        if (!live.naturalWidth || !live.naturalHeight)
+            return;
+
+        // На мобильном layout другой: камера и chart расположены вертикально.
+        if (window.matchMedia('(max-width: 760px)').matches) {
+            viewer.style.height = '';
+            return;
+        }
+
+        const cameraWidth = cameraWrap.clientWidth;
+        if (cameraWidth <= 0)
+            return;
+
+        const aspectHeight =
+            cameraWidth * live.naturalHeight / live.naturalWidth;
+
+        const maxHeight = Math.max(100, window.innerHeight - 110);
+
+        viewer.style.height =
+            Math.min(aspectHeight, maxHeight) + 'px';
+    }
+
     function restartLiveStream(delay = 0) {
       clearTimeout(streamRetryTimer);
       streamRetryTimer = setTimeout(() => {
@@ -469,6 +585,7 @@
         if (statusLabel.textContent === waitingStatus) statusLabel.textContent = '';
         applyControlState(update);
         viewer.classList.toggle('chart-on', update.state !== 0);
+        updateViewerSize();
         if (!savingVideo) {
           recordButton.textContent = update.videoRecording ? 'Stop Recording' : 'Record Video';
           recordButton.disabled = false;
@@ -631,13 +748,20 @@
 
     function drawThermalOverlay() {
       if (!live.naturalWidth || !live.naturalHeight) return;
-      const imageRect = live.getBoundingClientRect();
+      const elementRect = live.getBoundingClientRect();
       const wrapRect = cameraWrap.getBoundingClientRect();
-      const width = Math.max(1, imageRect.width);
-      const height = Math.max(1, imageRect.height);
+      /* object-fit:contain may letterbox inside the img element. Overlay the actual
+       * image content, not those internal black bars, so sensor coordinates remain
+       * correct at every browser aspect ratio. */
+      const containScale = Math.min(elementRect.width / live.naturalWidth,
+        elementRect.height / live.naturalHeight);
+      const width = Math.max(1, live.naturalWidth * containScale);
+      const height = Math.max(1, live.naturalHeight * containScale);
+      const contentLeft = elementRect.left + (elementRect.width - width) * .5;
+      const contentTop = elementRect.top + (elementRect.height - height) * .5;
       const ratio = Math.max(1, window.devicePixelRatio || 1);
-      thermalOverlay.style.left = (imageRect.left - wrapRect.left) + 'px';
-      thermalOverlay.style.top = (imageRect.top - wrapRect.top) + 'px';
+      thermalOverlay.style.left = (contentLeft - wrapRect.left) + 'px';
+      thermalOverlay.style.top = (contentTop - wrapRect.top) + 'px';
       thermalOverlay.style.width = width + 'px';
       thermalOverlay.style.height = height + 'px';
       const pixelWidth = Math.round(width * ratio), pixelHeight = Math.round(height * ratio);
@@ -689,7 +813,8 @@
       return step * 10;
     }
 
-    function drawSeries(context, values, enabled, color, lo, hi, left, right, top, bottom) {
+    function drawSeries(context, values, enabled, color, lo, hi, left, right, top, bottom,
+        lineWidth = 2) {
       if (!enabled || values.length === 0) return;
       context.beginPath();
       let started = false;
@@ -702,8 +827,13 @@
         else context.lineTo(x, y);
       }
       context.strokeStyle = color;
-      context.lineWidth = 2;
+      context.lineWidth = lineWidth;
       context.stroke();
+    }
+
+    function traceStyle(id) {
+      const traces = Array.isArray(meta.traces) ? meta.traces : defaultTraces;
+      return traces.find(trace => trace.id === id) || defaultTraces.find(trace => trace.id === id);
     }
 
     function drawPausedChartOverlay(context, width, height) {
@@ -742,11 +872,14 @@
       const right = width - Math.max(22, context.measureText('0').width + 10);
       const units = ['°C', '°F', 'K', '°R'];
       const suffix = ' [' + (units[meta.unit] || '°C') + ']';
+      const maxTrace = traceStyle('max');
+      const minTrace = traceStyle('min');
+      const centerTrace = traceStyle('center');
       const legendEntries = [];
-      if (meta.showMax) legendEntries.push({ color: '#f00', text: 'Max. T' + suffix });
-      if (meta.showMin) legendEntries.push({ color: '#00f', text: 'Min. T' + suffix });
-      if (meta.showCenter)
-        legendEntries.push({ color: '#dcaa00', text: 'Temperature' + suffix });
+      if (maxTrace.show) legendEntries.push({ color: maxTrace.color, text: maxTrace.name + suffix });
+      if (minTrace.show) legendEntries.push({ color: minTrace.color, text: minTrace.name + suffix });
+      if (centerTrace.show)
+        legendEntries.push({ color: centerTrace.color, text: centerTrace.name + suffix });
       const legendGap = 12;
       const legendLineHeight = fontSize * 1.2;
       let legendRows = 1, legendCursor = left;
@@ -770,9 +903,9 @@
           lo = Math.min(lo, value); hi = Math.max(hi, value);
         }
       };
-      include(data.max, meta.showMax);
-      include(data.min, meta.showMin);
-      include(data.center, meta.showCenter);
+      include(data.max, maxTrace.show);
+      include(data.min, minTrace.show);
+      include(data.center, centerTrace.show);
       if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
       if (hi - lo < .5) { hi += .25; lo -= .25; }
       const yDivisions = Math.max(2, Math.min(8,
@@ -835,9 +968,12 @@
         }
       }
 
-      drawSeries(context, data.max, meta.showMax, '#f00', lo, hi, left, right, top, bottom);
-      drawSeries(context, data.min, meta.showMin, '#00f', lo, hi, left, right, top, bottom);
-      drawSeries(context, data.center, meta.showCenter, '#dcaa00', lo, hi, left, right, top, bottom);
+      drawSeries(context, data.max, maxTrace.show, maxTrace.color,
+        lo, hi, left, right, top, bottom, Number(maxTrace.lineWidth) || 2);
+      drawSeries(context, data.min, minTrace.show, minTrace.color,
+        lo, hi, left, right, top, bottom, Number(minTrace.lineWidth) || 2);
+      drawSeries(context, data.center, centerTrace.show, centerTrace.color,
+        lo, hi, left, right, top, bottom, Number(centerTrace.lineWidth) || 2);
 
       context.lineWidth = 5;
       context.strokeStyle = '#444';
@@ -860,9 +996,19 @@
     }
 
     function drawChart() {
-      if (meta.state === 0 || chartWrap.clientWidth < 80 || chartWrap.clientHeight < 60) return;
-      renderChart(chart, chartWrap.clientWidth, chartWrap.clientHeight,
-        Math.max(1, window.devicePixelRatio || 1), true);
+        if (
+            meta.state === 0 ||
+            chartWrap.clientWidth < 80 ||
+            chartWrap.clientHeight < 60
+        ) return;
+
+        renderChart(
+            chart,
+            chartWrap.clientWidth,
+            chartWrap.clientHeight,
+            Math.max(1, window.devicePixelRatio || 1),
+            true
+        );
     }
 
     function exportChartCanvas(cameraWidth, cameraHeight, separate) {
@@ -1082,9 +1228,9 @@
       clearTimeout(chartHoldTimer);
       chartHeld = false;
     };
-    chartWrap.addEventListener('pointerdown', event => beginChartPress(event, false));
-    chartWrap.addEventListener('pointerup', () => finishChartPress(false));
-    chartWrap.addEventListener('pointercancel', cancelChartPress);
+    chartWrap.addEventListener('click', () => {
+      if (meta.state !== 0) openModal('chart-properties-modal');
+    });
     chartButton.addEventListener('pointerdown', event => beginChartPress(event, true));
     chartButton.addEventListener('pointerup', () => finishChartPress(true));
     chartButton.addEventListener('pointercancel', cancelChartPress);
@@ -1094,9 +1240,16 @@
         sendCommand('chart_toggle');
       }
     });
-    live.addEventListener('load', requestDraw);
+    live.addEventListener('load', () => {
+        updateViewerSize();
+        requestDraw();
+    });
     live.addEventListener('error', () => restartLiveStream(1000));
-    window.addEventListener('resize', requestDraw);
+    window.addEventListener('resize', () => {
+        updateViewerSize();
+        requestDraw();
+    });
+
     if ('ResizeObserver' in window) {
       const observer = new ResizeObserver(requestDraw);
       observer.observe(chartWrap);

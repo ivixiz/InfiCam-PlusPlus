@@ -462,6 +462,22 @@ extern "C" {
 		InfiCamJNI *t = getObject(env, self);
 		t->cam.unlock_shutter();
 	}
+	JNIEXPORT jboolean Java_be_ntmn_libinficam_InfiCam_canHoldShutterForSpatialCalibration(JNIEnv *env, jobject self) {
+		InfiCamJNI *t = getObject(env, self);
+		return t->cam.can_hold_shutter_for_spatial_calibration();
+	}
+	JNIEXPORT jboolean Java_be_ntmn_libinficam_InfiCam_holdShutterForSpatialCalibration(JNIEnv *env, jobject self) {
+		InfiCamJNI *t = getObject(env, self);
+		return t->cam.hold_shutter_for_spatial_calibration();
+	}
+	JNIEXPORT jboolean Java_be_ntmn_libinficam_InfiCam_releaseShutterAfterSpatialCalibration(JNIEnv *env, jobject self) {
+		InfiCamJNI *t = getObject(env, self);
+		return t->cam.release_shutter_after_spatial_calibration();
+	}
+	JNIEXPORT jboolean Java_be_ntmn_libinficam_InfiCam_isStreaming(JNIEnv *env, jobject self) {
+		InfiCamJNI *t = getObject(env, self);
+		return t->cam.is_streaming();
+	}
 	JNIEXPORT void Java_be_ntmn_libinficam_InfiCam_calibrate(JNIEnv *env, jobject self) {
 		InfiCamJNI *t = getObject(env, self);
 		t->cam.calibrate();

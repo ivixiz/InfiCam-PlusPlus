@@ -35,6 +35,8 @@ public final class TimeChartView extends View {
 	private int maxSumCount, minSumCount, centerSumCount;
 	private boolean recording;
 	private boolean showMax, showMin, showCenter;
+	private ChartTraceConfig.Trace[] traceStyles = ChartTraceConfig.defaults();
+	private float density;
 	private int unit;
 
 	public TimeChartView(Context context) { super(context); init(); }
@@ -44,7 +46,22 @@ public final class TimeChartView extends View {
 		setBackgroundColor(Color.WHITE);
 		textPaint.setColor(Color.DKGRAY);
 		textPaint.setTextSize(getResources().getDisplayMetrics().scaledDensity * 15.0f);
+		density = getResources().getDisplayMetrics().density;
 		setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+	}
+
+	public synchronized void setTraceStyles(ChartTraceConfig.Trace[] styles) {
+		if (styles == null || styles.length < 3)
+			return;
+		traceStyles = styles;
+		invalidate();
+	}
+
+	public synchronized void setTraceVisibility(int trace, boolean visible) {
+		if (trace == ChartTraceConfig.MAX) showMax = visible;
+		else if (trace == ChartTraceConfig.MIN) showMin = visible;
+		else if (trace == ChartTraceConfig.CENTER) showCenter = visible;
+		invalidate();
 	}
 
 	public synchronized void start(int tempUnit, boolean max, boolean min, boolean center) {
@@ -136,12 +153,41 @@ public final class TimeChartView extends View {
 				.append(",\"exportSeparately\":").append(exportSeparately)
 				.append(",\"imageType\":").append(imageType)
 				.append(",\"imageQuality\":").append(imageQuality)
-				.append(",\"viewWidth\":").append(getWidth())
-				.append(",\"viewHeight\":").append(getHeight());
+					.append(",\"viewWidth\":").append(getWidth())
+					.append(",\"viewHeight\":").append(getHeight());
+		json.append(",\"traces\":[");
+		appendTraceJson(json, traceStyles[ChartTraceConfig.MAX], showMax, false);
+		appendTraceJson(json, traceStyles[ChartTraceConfig.MIN], showMin, true);
+		appendTraceJson(json, traceStyles[ChartTraceConfig.CENTER], showCenter, true);
+		json.append(']');
 		appendJsonArray(json, "max", maxValues, from, visibleCount);
 		appendJsonArray(json, "min", minValues, from, visibleCount);
 		appendJsonArray(json, "center", centerValues, from, visibleCount);
 		return json.append('}').toString();
+	}
+
+	private static void appendTraceJson(StringBuilder json, ChartTraceConfig.Trace trace,
+			boolean visible, boolean comma) {
+		if (comma) json.append(',');
+		json.append('{').append("\"id\":");
+		appendJsonString(json, trace.id);
+		json.append(",\"measurement\":");
+		appendJsonString(json, trace.measurementSetting);
+		json.append(",\"name\":");
+		appendJsonString(json, trace.name);
+		json.append(",\"lineWidth\":").append(trace.lineWidth)
+				.append(",\"color\":\"").append(ChartTraceConfig.colorHex(trace.color))
+				.append("\",\"show\":").append(visible).append('}');
+	}
+
+	private static void appendJsonString(StringBuilder json, String value) {
+		json.append('"');
+		for (int i = 0; i < value.length(); ++i) {
+			char c = value.charAt(i);
+			if (c == '"' || c == '\\') json.append('\\');
+			if (c >= 0x20) json.append(c);
+		}
+		json.append('"');
 	}
 
 	private static void appendJsonArray(StringBuilder json, String name, float[] values,
@@ -172,23 +218,29 @@ public final class TimeChartView extends View {
 		lastSampleNs = now;
 		unit = tempUnit;
 		showMax = showMaxValue; showMin = showMinValue; showCenter = showCenterValue;
-		if (Float.isFinite(max)) { maxSum += max; maxSumCount++; }
-		if (Float.isFinite(min)) { minSum += min; minSumCount++; }
-		if (Float.isFinite(center)) { centerSum += center; centerSumCount++; }
+		if (!showMaxValue) { maxSum = 0.0; maxSumCount = 0; }
+		else if (Float.isFinite(max)) { maxSum += max; maxSumCount++; }
+		if (!showMinValue) { minSum = 0.0; minSumCount = 0; }
+		else if (Float.isFinite(min)) { minSum += min; minSumCount++; }
+		if (!showCenterValue) { centerSum = 0.0; centerSumCount = 0; }
+		else if (Float.isFinite(center)) { centerSum += center; centerSumCount++; }
 		if (++averageCount < averageSamples)
 			return;
-		float averagedMax = maxSumCount == 0 ? Float.NaN : (float)(maxSum / maxSumCount);
-		float averagedMin = minSumCount == 0 ? Float.NaN : (float)(minSum / minSumCount);
-		float averagedCenter = centerSumCount == 0 ? Float.NaN : (float)(centerSum / centerSumCount);
+		float averagedMax = !showMaxValue || maxSumCount == 0 ? Float.NaN :
+				(float)(maxSum / maxSumCount);
+		float averagedMin = !showMinValue || minSumCount == 0 ? Float.NaN :
+				(float)(minSum / minSumCount);
+		float averagedCenter = !showCenterValue || centerSumCount == 0 ? Float.NaN :
+				(float)(centerSum / centerSumCount);
 		resetAverage();
 		if (sampleCount >= MAX_SAMPLES) {
 			/* Decimate in one pass instead of shifting one element for every new
 			 * sample. This keeps memory and drawing time bounded for multi-hour logs. */
 			int out = 0;
 			for (int i = 0; i + 1 < sampleCount; i += 2) {
-				maxValues[out] = (maxValues[i] + maxValues[i + 1]) * .5f;
-				minValues[out] = (minValues[i] + minValues[i + 1]) * .5f;
-				centerValues[out] = (centerValues[i] + centerValues[i + 1]) * .5f;
+				maxValues[out] = finiteAverage(maxValues[i], maxValues[i + 1]);
+				minValues[out] = finiteAverage(minValues[i], minValues[i + 1]);
+				centerValues[out] = finiteAverage(centerValues[i], centerValues[i + 1]);
 				out++;
 			}
 			if ((sampleCount & 1) != 0) {
@@ -209,6 +261,12 @@ public final class TimeChartView extends View {
 		centerValues[sampleCount] = convert(averagedCenter, tempUnit);
 		sampleCount++;
 		postInvalidateOnAnimation();
+	}
+
+	private static float finiteAverage(float first, float second) {
+		if (!Float.isFinite(first)) return second;
+		if (!Float.isFinite(second)) return first;
+		return (first + second) * 0.5f;
 	}
 
 	private void resetAverage() {
@@ -265,7 +323,12 @@ public final class TimeChartView extends View {
 		float axisTextWidth = textPaint.measureText("-000.0");
 		float left = Math.max(52.0f, axisTextWidth + 4.0f);
 		float right = w - Math.max(22.0f, textPaint.measureText("0") + 8.0f);
-		float top = 52, bottom = h - 38;
+		String suffix = " [" + unitName(unit) + "]";
+		float legendBaseline = textPaint.getTextSize() + 8.0f;
+		float legendLineHeight = textPaint.getTextSize() * 1.25f;
+		int legendRows = countLegendRows(left, right, suffix);
+		float top = legendBaseline + Math.max(0, legendRows - 1) * legendLineHeight + 14.0f;
+		float bottom = h - 38;
 		if (right <= left + 10.0f)
 			return;
 		float lo = Float.POSITIVE_INFINITY, hi = Float.NEGATIVE_INFINITY;
@@ -345,9 +408,12 @@ public final class TimeChartView extends View {
 				previousLabelRight = x + halfWidth;
 			}
 		}
-		drawSeries(canvas, maxValues, Color.RED, lo, hi, left, right, top, bottom);
-		drawSeries(canvas, minValues, Color.BLUE, lo, hi, left, right, top, bottom);
-		drawSeries(canvas, centerValues, Color.rgb(220, 170, 0), lo, hi, left, right, top, bottom);
+		drawSeries(canvas, maxValues, traceStyles[ChartTraceConfig.MAX], showMax,
+				lo, hi, left, right, top, bottom);
+		drawSeries(canvas, minValues, traceStyles[ChartTraceConfig.MIN], showMin,
+				lo, hi, left, right, top, bottom);
+		drawSeries(canvas, centerValues, traceStyles[ChartTraceConfig.CENTER], showCenter,
+				lo, hi, left, right, top, bottom);
 		/* A strong outer contour separates the chart from the camera and controls,
 		 * while the lighter grid remains readable inside it. */
 		paint.setStyle(Paint.Style.STROKE);
@@ -355,14 +421,39 @@ public final class TimeChartView extends View {
 		paint.setColor(Color.DKGRAY);
 		canvas.drawRect(left, top, right, bottom, paint);
 		textPaint.setTextAlign(Paint.Align.LEFT);
-		float legendX = left, legendY = 33;
-		String suffix = " [" + unitName(unit) + "]";
-		if (showMax) { textPaint.setColor(Color.RED); String s = "Max. T" + suffix;
-			canvas.drawText(s, legendX, legendY, textPaint); legendX += textPaint.measureText(s) + 18; }
-		if (showMin) { textPaint.setColor(Color.BLUE); String s = "Min. T" + suffix;
-			canvas.drawText(s, legendX, legendY, textPaint); legendX += textPaint.measureText(s) + 18; }
-		if (showCenter) { textPaint.setColor(Color.rgb(220, 170, 0));
-			canvas.drawText("Temperature" + suffix, legendX, legendY, textPaint); }
+		drawLegend(canvas, left, right, legendBaseline, legendLineHeight, suffix);
+	}
+
+	private int countLegendRows(float left, float right, String suffix) {
+		int rows = 1;
+		float x = left;
+		for (int i = 0; i < traceStyles.length; ++i) {
+			if (!isTraceVisible(i)) continue;
+			float width = textPaint.measureText(traceStyles[i].name + suffix);
+			if (x > left && x + width > right) { rows++; x = left; }
+			x += width + 18.0f;
+		}
+		return rows;
+	}
+
+	private void drawLegend(Canvas canvas, float left, float right, float baseline,
+			float lineHeight, String suffix) {
+		float x = left, y = baseline;
+		for (int i = 0; i < traceStyles.length; ++i) {
+			if (!isTraceVisible(i)) continue;
+			ChartTraceConfig.Trace trace = traceStyles[i];
+			String text = trace.name + suffix;
+			float width = textPaint.measureText(text);
+			if (x > left && x + width > right) { x = left; y += lineHeight; }
+			textPaint.setColor(trace.color);
+			canvas.drawText(text, x, y, textPaint);
+			x += width + 18.0f;
+		}
+	}
+
+	private boolean isTraceVisible(int trace) {
+		return trace == ChartTraceConfig.MAX ? showMax :
+				trace == ChartTraceConfig.MIN ? showMin : showCenter;
 	}
 
 	private void drawPausedOverlay(Canvas canvas) {
@@ -389,10 +480,10 @@ public final class TimeChartView extends View {
 		textPaint.setColor(oldColor);
 	}
 
-	private void drawSeries(Canvas canvas, float[] values, int color, float lo, float hi,
+	private void drawSeries(Canvas canvas, float[] values, ChartTraceConfig.Trace trace,
+			boolean visible, float lo, float hi,
 			float left, float right, float top, float bottom) {
-		if ((color == Color.RED && !showMax) || (color == Color.BLUE && !showMin) ||
-				(color == Color.rgb(220, 170, 0) && !showCenter)) return;
+		if (!visible) return;
 		path.reset();
 		boolean started = false;
 		for (int i = 0; i < sampleCount; ++i) {
@@ -405,7 +496,9 @@ public final class TimeChartView extends View {
 			if (!started) { path.moveTo(x, y); started = true; }
 			else path.lineTo(x, y);
 		}
-		paint.setColor(color); paint.setStrokeWidth(4); paint.setStyle(Paint.Style.STROKE);
+		paint.setColor(trace.color);
+		paint.setStrokeWidth(trace.lineWidth * density);
+		paint.setStyle(Paint.Style.STROKE);
 		canvas.drawPath(path, paint);
 	}
 
