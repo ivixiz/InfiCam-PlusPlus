@@ -85,21 +85,21 @@ buffers. GPU/Vulkan processing is not required for this stage.
 ### Optional ESP32-S3 USB Web Control bridge
 
 **Settings → Use ESP-32 for connection** enables a dedicated local connection for
-Web Control. The phone joins the `InfiCam-Bridge` access point and registers the
+Web Control. The phone joins the `InfiCamBridge` access point and registers the
 running Web Control server with the ESP32-S3. A PC connected to the ESP USB-OTG
 port receives a CDC-NCM Ethernet interface and can then open the fixed address
 **http://192.168.7.1**. The bridge forwards HTTP, controls, state, MJPEG and export
 downloads as TCP bytes; it does not decode or re-encode camera data.
 
 Android displays its nearby Wi-Fi chooser on the first connection. Enable the
-setting, approve `InfiCam-Bridge`, and start Web Control. The fixed URL is shown in
+setting, approve `InfiCamBridge`, and start Web Control. The fixed URL is shown in
 the app only after registration succeeds. Both the phone registration and the
 Wi-Fi network request recover automatically after a temporary link loss. With the
 setting disabled, Web Control retains its normal local-network address and
 behaviour.
 
-The ESP-IDF firmware and build instructions are in the adjacent local project
-`~/Documents/Code/Rust/espbridge`.
+The ESP-IDF firmware and build instructions are in README.md of the adjacent local project
+`./espbridge`.
 
 ### Pictures, video, and sharing
 

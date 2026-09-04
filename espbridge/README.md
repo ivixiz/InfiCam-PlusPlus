@@ -8,7 +8,7 @@ Android/InfiCam -- Wi-Fi SoftAP --> ESP32-S3 -- USB CDC-NCM --> PC
 ```
 
 The fixed PC address is **http://192.168.7.1**. The phone joins
-`InfiCam-Bridge` (WPA2 password `InfiCam-Bridge`) and registers the active
+`InfiCamBridge` (WPA2 password hardcoded in esp src and Inficam App - `5KfHSF21`) and registers the active
 InfiCam `WebViewServer` port with the bridge. HTTP requests, controls, MJPEG,
 state, images and video are forwarded as unchanged TCP bytes.
 
@@ -21,11 +21,10 @@ the NCM interface.
 
 ## Build and flash
 
-For the local toolchain installed in `~/Documents/`, run the
-one-command programmer from any directory:
+Run the script:
 
 ```sh
-./flash_esp32s3.sh
+./flash_esp32s3.sh ~/path_to/esp-idf ~/path_to/idf-tools
 ```
 
 The script displays the BOOT/RESET sequence, waits for `/dev/ttyACM*`, builds
@@ -34,7 +33,7 @@ fixed HTTP address. An explicit serial port can be supplied if several boards
 are connected:
 
 ```sh
-./flash_esp32s3.sh /dev/ttyACM1
+./flash_esp32s3.sh ~/path_to/esp-idf ~/path_to/idf-tools /dev/ttyACM1
 ```
 
 For a manual ESP-IDF 6.0 or newer build:
