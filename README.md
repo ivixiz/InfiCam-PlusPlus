@@ -154,7 +154,8 @@ as polling succeeds again. Controls remain horizontally scrollable on narrow mob
 browsers.
 
 <img width="1193" height="754" alt="screenshot" src="https://github.com/user-attachments/assets/ad32e119-3eff-4608-95eb-742af45d616e" />
-#### Starting Web Control
+
+### Starting Web Control
 
 1. Connect the phone and viewing device to the same Wi-Fi/local network.
 2. Connect the thermal camera and wait for the image/calibration to complete.
@@ -181,10 +182,62 @@ interfaces may expose a different address than the phone's usual Wi-Fi address.
 - Control icons use consistent sizing across the top and bottom rows.
 
 ## Downloads and related projects
-
-- [InfiCamPlus releases](https://github.com/diminDDL/InfiCamPlus/releases)
+- [InfiCam++ releases](https://github.com/diminDDL/InfiCamPlus/releases)
+- [InfiCamPlus releases](https://github.com/ivixiz/InfiCam-PlusPlus/releases)
 - [Original InfiCam project](https://gitlab.com/netman69/inficam)
 - [Desktop Python thermal-camera tools](https://github.com/diminDDL/IR-Py-Thermal)
+
+## Build project
+
+* Build the debug version:
+
+  ```bash
+  ./gradlew :app:assembleDebug
+  ```
+
+* Build the release version:
+
+  ```bash
+  ./gradlew :app:assembleRelease
+  ```
+
+### Wireless installation via ADB (optional)
+
+1. Install ADB tools:
+
+   ```bash
+   sudo apt update
+   sudo apt install adb
+   ```
+
+2. Connect your phone and computer to the same Wi-Fi network.
+
+3. On your phone, go to:
+
+   **Settings → System → Developer options → Wireless debugging**
+
+   and enable **Wireless debugging**.
+
+4. Pair the phone with your computer:
+
+   ```bash
+   adb pair 192.168.0.52:XXXXX
+   ```
+
+5. Connect to the phone:
+
+   ```bash
+   adb connect 192.168.0.52:YYYYY
+   ```
+
+6. Install the debug APK:
+
+   ```bash
+   adb -s 192.168.0.52:YYYYY install -r \
+     app/build/outputs/apk/debug/app-debug.apk
+   ```
+Alternatively, you can copy the APK to your phone and install it manually.
+
 
 ## Contributing
 
