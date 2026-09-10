@@ -11,7 +11,11 @@ import java.util.concurrent.TimeUnit;
 
 import be.ntmn.libinficam.SpatialCalibrationEngine;
 
-/** Owns the spatial calibration state machine and transactional commit. */
+/**
+ * @deprecated Spatial FPN autocalibration is disabled and disconnected from the application.
+ * This source is retained only as documentation of the former experimental implementation.
+ */
+@Deprecated
 final class CalibrationController implements AutoCloseable {
 	enum State {
 		IDLE, PREPARING, COLLECTING, VALIDATING, COMMITTING, COMPLETED,

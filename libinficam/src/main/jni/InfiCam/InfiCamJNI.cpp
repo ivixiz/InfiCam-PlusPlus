@@ -462,6 +462,7 @@ extern "C" {
 		InfiCamJNI *t = getObject(env, self);
 		t->cam.unlock_shutter();
 	}
+	/* DEPRECATED: retained ABI only; Spatial FPN calibration is disabled in the app. */
 	JNIEXPORT jboolean Java_be_ntmn_libinficam_InfiCam_canHoldShutterForSpatialCalibration(JNIEnv *env, jobject self) {
 		InfiCamJNI *t = getObject(env, self);
 		return t->cam.can_hold_shutter_for_spatial_calibration();

@@ -25,7 +25,6 @@ LOCAL_SRC_FILES := \
 		InfiFrame.cpp \
 		InfiCam.cpp \
 		InfiCamJNI.cpp \
-		SpatialCalibrationEngine.cpp \
 		Utils.cpp \
 		CameraSettings.cpp \
 

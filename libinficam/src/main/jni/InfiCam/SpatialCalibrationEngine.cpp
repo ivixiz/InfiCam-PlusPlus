@@ -1,3 +1,4 @@
+/* DEPRECATED: experimental Spatial FPN autocalibration; intentionally not compiled. */
 #include "SpatialCalibrationEngine.h"
 
 #include <algorithm>

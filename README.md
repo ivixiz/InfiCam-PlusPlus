@@ -30,7 +30,9 @@ The Time Chart displays enabled temperature measurements over time:
 - minimum temperature in blue;
 - center-point temperature in yellow.
 
-The available series follow the selections in Measurement Settings. The chart uses
+The available global series follow the selections in Measurement Settings. Point,
+line and rectangle measurement objects add their own dynamically configurable
+series. The chart uses
 an automatically scaled major/minor grid, collision-aware time labels, adaptive time
 formats from seconds to hours, and the temperature unit selected in the app.
 
@@ -46,41 +48,56 @@ delete` overlay. The overlay is intentionally excluded from exported pictures an
 videos. Paused intervals are also removed from recorded video instead of producing
 long frozen sections.
 
-The chart sample rate can be configured from `0.04 s` (the 25 FPS camera period) to
-`1800 s` (30 minutes). Long sessions are bounded to 12,000 stored points; older data
-is progressively decimated while preserving the overall trend and elapsed-time
-scale.
+Chart sample rate, averaging and separate export are configured at the top of Chart
+Properties rather than in the general Settings screen. The sample rate ranges from
+`0.04 s` (the 25 FPS camera period) to `1800 s` (30 minutes). A newly opened chart
+with no user-created measurement waits for the first point, line or rectangle before
+starting its time axis at zero. Long sessions are bounded to 12,000 stored points;
+older data is progressively decimated while preserving the overall trend and
+elapsed-time scale.
 
 <img width="2400" height="1080" alt="Screenshot_20260830-141904104" src="https://github.com/user-attachments/assets/55b56047-8df2-4c3c-97e3-dd452d3f2e79" />
 
-### Spatial fixed-pattern autocalibration
+### Spatial fixed-pattern autocalibration (deprecated)
 
-The **Settings → Spatial fixed-pattern autocalibration…** action creates a
-per-camera additive offset map to reduce persistent pixel-to-pixel temperature
-differences (spatial FPN).
-Calibration takes approximately ten minutes at a stable room temperature of
-20–25 °C. Cameras whose shutter can safely remain closed use it automatically.
-For P2 Pro the app uses the official SDK's independent manual shutter switch,
-keeps the internal shutter closed for the acquisition, and restores it on success,
-cancellation, lifecycle teardown, timeout, or USB recovery. Cameras without a
-safe long-duration shutter hold ask for a uniform opaque lens cover instead.
+The experimental single-temperature Spatial FPN autocalibration did not provide a
+consistent accuracy improvement across cameras and is deprecated. It has been
+removed from Settings and disconnected from frame processing, persistence and the
+camera lifecycle. Old profiles are not loaded or applied. The former implementation
+is retained as deprecated source documentation and its processing engine is not
+compiled into the native library.
 
-The first two minutes are reserved for thermal stabilization. The remaining frames
-are processed online: every frame is referenced to the median of all finite thermal
-pixels, then per-pixel residuals are accumulated with robust transient/outlier
-rejection. No frames are retained in memory. This is an offset-only procedure at one
-temperature; it intentionally does not attempt a gain calibration.
+### Point, line and rectangle measurements
 
-The offset map is applied before min/max/center measurements, Time Chart sampling,
-rendering, Web Control, pictures, video, and sharing. Profiles are keyed by the
-physical USB serial when available and loaded automatically after reconnect. Saving
-is transactional: an existing valid profile remains active until a candidate has
-passed validation and its replacement has been atomically committed. Cancellation,
-frame timeout, USB loss, app shutdown, and validation errors discard the candidate
-and preserve the previous profile.
+The Measurement Tools flyout contains Point, Line, Rectangle and Measurement
+Settings. Select a tool, then tap the thermal image for a point or drag between two
+positions for a line/rectangle. Coordinates are stored in normalized sensor space,
+so measurements remain aligned through zoom, rotation, mirroring, export resolution
+changes and cameras with different native resolutions.
 
-The hot path is implemented as an allocation-free native CPU pass with preallocated
-buffers. GPU/Vulkan processing is not required for this stage.
+- Points add numbered traces `Tp1` … `Tp5`.
+- Lines add numbered pairs such as `Tlmin1` and `Tlmax1`.
+- Rectangles add numbered groups such as `Trmin1`, `Trcen1` and `Trmax1`.
+
+Every series appears in the compact, scrollable Chart Properties table with editable
+name, line width, colour and visibility. Show and Delete are separate columns. Custom
+rows have a trash action which permanently removes that recorded series; deleting an
+object's last series also removes the corresponding thermogram measurement. The three
+global series cannot be deleted. Hidden series are neither
+displayed nor sampled. Tapping an existing object deletes the topmost/latest
+overlapping object, while pressing and dragging translates it without changing its
+shape; its chart history remains and
+continues with a gap until the chart is deleted. Re-adding the same object type reuses
+that slot and its trace names, colours and line widths instead of adding more legend
+rows. Later slots receive distinct randomized colours. Up to five points, three lines
+and three rectangles can be active at once. Web Control exposes the same tools,
+objects, values and trace settings.
+
+Starting a new Time Chart prunes historical custom legends which no longer have a
+measurement on the thermogram. Long histories are rendered with per-pixel-column
+line compression derived from ngspice's approach: first/last values and extrema are
+preserved while redundant sub-pixel segments are skipped. Series bounds are maintained
+incrementally, and the on-screen Android chart remains hardware accelerated.
 
 ### Optional ESP32-S3 USB Web Control bridge
 
@@ -130,7 +147,7 @@ Available synchronized controls include:
 - palette selection and a dual-thumb locked palette range;
 - mirror and shutter calibration;
 - application Settings;
-- Measurement Settings;
+- point, line and rectangle Measurement Tools plus Measurement Settings;
 - Thermometry Settings, including the camera temperature range;
 - phone battery state;
 - Save Picture and Record Video.

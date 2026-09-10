@@ -1,6 +1,7 @@
 package be.ntmn.inficam;
 
-/** Hardware boundary used by spatial calibration. */
+/** @deprecated Used only by the disabled Spatial FPN calibration implementation. */
+@Deprecated
 public interface ThermalCameraHal {
 	String getPhysicalDeviceId();
 	boolean isReady();

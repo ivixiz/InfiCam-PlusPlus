@@ -4,6 +4,11 @@ package be.ntmn.libinficam;
  * Reusable, camera-independent native CPU engine for additive spatial FPN
  * calibration. All hot-path buffers live in native memory and are reused.
  */
+/**
+ * @deprecated Spatial FPN autocalibration is disabled. Native support is intentionally no longer
+ * built; this class remains only as documentation of the former experimental implementation.
+ */
+@Deprecated
 public final class SpatialCalibrationEngine implements AutoCloseable {
 	public static final class Candidate {
 		public final float[] offsets;

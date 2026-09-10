@@ -6,7 +6,8 @@ import java.util.Locale;
 
 import be.ntmn.libinficam.InfiCam;
 
-/** InfiCam backend adapter. No hardware-specific code leaks into the calibration engine. */
+/** @deprecated Used only by the disabled Spatial FPN calibration implementation. */
+@Deprecated
 final class InfiCamThermalCameraHal implements ThermalCameraHal {
 	private final InfiCam camera;
 	private final String physicalDeviceId;

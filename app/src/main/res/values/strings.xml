@@ -37,6 +37,11 @@
 	<string name="btn_settings">Settings</string>
 	<string name="btn_settings_therm">Thermometry settings</string>
 	<string name="btn_settings_measure">Measurement settings</string>
+	<string name="btn_measurement_tools">Measurement tools</string>
+	<string name="btn_measure_point">Add measurement point</string>
+	<string name="btn_measure_line">Add measurement line</string>
+	<string name="btn_measure_rectangle">Add measurement rectangle</string>
+	<string name="msg_measurement_limit">Maximum number of this measurement type reached.</string>
 	<string name="btn_lock">Lock range</string>
 	<string name="btn_gallery">Gallery</string>
 	<string name="btn_share">Share</string>
@@ -47,11 +52,9 @@
 	<string name="chart_line_width">Line width</string>
 	<string name="chart_color">Color</string>
 	<string name="chart_show">Show</string>
+	<string name="chart_delete">Delete</string>
+	<string name="chart_delete_trace">Delete recorded trace</string>
 	<string name="chart_pick_color">Select trace color</string>
-	<string name="spatial_calibration_title">Spatial fixed-pattern autocalibration</string>
-	<string name="spatial_calibration_intro">Autocalibration will take approximately 10 minutes. Keep the camera stationary at room temperature (20–25 °C).</string>
-	<string name="spatial_calibration_cover">Completely cover the lens with a uniform opaque cover and keep it covered until calibration finishes.</string>
-	<string name="spatial_calibration_shutter">The camera shutter will close automatically and remain closed until calibration finishes.</string>
 
 	<string name="dialog_set_main">Settings</string>
 	<string name="dialog_set_therm">Thermometry Settings</string>
@@ -84,7 +87,6 @@
 	<string name="set_chart_average_samples">Average per sample:</string>
 	<string name="set_export_chart_separately">Export chart separately</string>
 	<string name="set_use_esp32_connection">Use ESP-32 for connection</string>
-	<string name="set_spatial_autocalibration">Spatial fixed-pattern autocalibration…</string>
 	<string name="set_defaults">Reset to defaults</string>
 
 	<string name="set_show_min">Show min temperature</string>

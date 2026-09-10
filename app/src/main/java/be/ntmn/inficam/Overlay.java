@@ -45,6 +45,7 @@ public class Overlay {
 	private final Paint paintTextOutline;
 	private final Paint paintPalette;
 	private final Drawable lock;
+	private MeasurementManager measurements;
 	private int width;
 	private final Rect vRect = new Rect(), rectTgt = new Rect(); /* Do not alloc each frame! */
 
@@ -85,6 +86,8 @@ public class Overlay {
 		width = w;
 		surface.setSize(w, h);
 	}
+
+	public void setMeasurements(MeasurementManager value) { measurements = value; }
 
 	/** Returns whether a screen-space touch is on the visible palette strip. */
 	public boolean isPaletteHit(int x, int y, Rect imageRect, boolean show) {
@@ -178,6 +181,9 @@ public class Overlay {
 			paint.setColor(Color.rgb(255, 64, 64)); // Red.
 			drawTPoint(cvs, d, d.mmac.max_x, d.mmac.max_y, d.mmac.max);
 		}
+
+		if (measurements != null)
+			measurements.draw(cvs, d, vRect);
 
 		if (d.showPalette) {
 			int clear = (int) (pclearance * vRect.width());

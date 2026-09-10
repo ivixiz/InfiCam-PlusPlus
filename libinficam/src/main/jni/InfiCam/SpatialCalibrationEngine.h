@@ -1,3 +1,4 @@
+/* DEPRECATED: experimental Spatial FPN autocalibration; intentionally not compiled. */
 #ifndef SPATIAL_CALIBRATION_ENGINE_H_
 #define SPATIAL_CALIBRATION_ENGINE_H_
 

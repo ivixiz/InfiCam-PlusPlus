@@ -15,7 +15,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.zip.CRC32;
 
-/** Transactional, per-physical-camera offset-map persistence. */
+/** @deprecated Spatial FPN autocalibration is disabled. */
+@Deprecated
 final class SpatialCalibrationStore {
 	private static final int MAGIC = 0x5346504e; // SFPN
 	/* v2 profiles are acquired against a hardware-held internal shutter where

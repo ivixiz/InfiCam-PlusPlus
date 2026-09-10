@@ -31,10 +31,12 @@ import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
@@ -45,6 +47,8 @@ import android.widget.CheckBox;
 import android.widget.HorizontalScrollView;
 import android.text.InputType;
 import android.widget.LinearLayout;
+import android.widget.PopupWindow;
+import android.widget.ScrollView;
 import android.widget.TableLayout;
 import android.widget.TableRow;
 import android.widget.TextView;
@@ -103,6 +107,7 @@ public class MainActivity extends BaseActivity {
 	private ViewGroup dialogBackground;
 	private Settings activeSettingsDialog;
 	private SettingsMain settings;
+	private SettingsChart settingsChart;
 	private SettingsTherm settingsTherm;
 	private SettingsMeasure settingsMeasure;
 	private SettingsPalette settingsPalette;
@@ -111,17 +116,28 @@ public class MainActivity extends BaseActivity {
 	private SliderDouble rangeSlider;
 	private FrameLayout cameraContainer;
 	private ImageButton buttonPhoto, buttonShare, buttonWebView, buttonTimeChart;
-	private CalibrationController spatialCalibrationController;
-	private InfiCamThermalCameraHal thermalCameraHal;
-	private AlertDialog spatialCalibrationProgressDialog;
 	private TimeChartView timeChart;
 	private ChartTraceConfig chartTraceConfig;
+	private MeasurementManager measurementManager;
+	private ImageButton buttonMeasurementTools;
+	private PopupWindow measurementToolsPopup;
+	private float[] chartSampleValues = new float[3];
+	private final float[] measurementTouch = new float[2];
+	private boolean measurementRedrawPending;
+	private final Runnable measurementGestureRedraw = () -> {
+		measurementRedrawPending = false;
+		if (disconnecting || outScreen == null || inputSurface == null ||
+				inputSurface.surface == null || renderOverlayData.mmac == null) return;
+		// Reuse the last thermal texture and measurements; only the lightweight overlay changes.
+		drawFrame(outScreen, overlayScreen, true, renderOverlayData);
+	};
 	private AlertDialog chartPropertiesDialog;
 	private CheckBox[] chartTraceShowBoxes = new CheckBox[0];
 	private EditText[] chartTraceNameFields = new EditText[0];
 	private EditText[] chartTraceWidthFields = new EditText[0];
 	private Button[] chartTraceColorButtons = new Button[0];
 	private volatile int timeChartState = 0; // 0 hidden, 1 recording, 2 stopped/visible
+	private volatile boolean chartWaitingForFirstMeasurement;
 	private static final int TIME_CHART_HEIGHT_DP = 300;
 	private static final int TIME_CHART_BOTTOM_GAP_DP = 9;
 	private static final int TIME_CHART_BUTTON_RESERVE_DP = 72;
@@ -415,12 +431,6 @@ public class MainActivity extends BaseActivity {
 						latestTempBuffer = new float[temp.length];
 					System.arraycopy(temp, 0, latestTempBuffer, 0, temp.length);
 					applyLocalCorrection(latestTempBuffer);
-					/* The committed additive FPN map is applied exactly once, before
-					 * measurements, analysis, rendering, Web Control and every export. While
-					 * autocalibration is collecting, the engine observes the uncorrected copy
-					 * first and then applies the previous valid map for normal display. */
-					if (spatialCalibrationController != null)
-						spatialCalibrationController.processFrame(latestTempBuffer);
 					copyFrameInfo(fi, latestFrameInfo);
 					overlayData.fi = latestFrameInfo;
 					overlayData.temp = latestTempBuffer;
@@ -440,6 +450,8 @@ public class MainActivity extends BaseActivity {
 						latestMmac = Overlay.computeMmac(latestTempBuffer, fi.width, fi.height);
 					}
 					overlayData.mmac = latestMmac;
+					if (measurementManager != null)
+						measurementManager.compute(latestTempBuffer, fi.width, fi.height);
 					latestSensorMax = getCorrectedMaxTempClipping(fi.settings.max_temp_clipping);
 
 					if (acceptCameraSettings && !overTempLockoutActive &&
@@ -598,10 +610,6 @@ public class MainActivity extends BaseActivity {
 				int width = infiCam.getWidth();
 				int height = infiCam.getHeight();
 				float[][] ranges = infiCam.getRanges();
-				InfiCamThermalCameraHal newHal = new InfiCamThermalCameraHal(infiCam, dev);
-				spatialCalibrationController.attachCamera(newHal, width, height);
-				thermalCameraHal = newHal;
-
 				runOnUiThreadSync(() -> {
 					if (!isCurrentConnection(token, conn))
 						return;
@@ -835,9 +843,20 @@ public class MainActivity extends BaseActivity {
 			/* Don't try stuff when disconnected. */
 			return;
 		}
-		if (timeChart != null && timeChart.isRecording() && data.mmac != null)
-			timeChart.sample(data.mmac.max, data.mmac.min, data.mmac.center, data.tempUnit,
-					data.showMax, data.showMin, data.showCenter);
+		if (chartWaitingForFirstMeasurement && hasEnabledChartMeasurement())
+			chartWaitingForFirstMeasurement = false;
+		if (timeChart != null && timeChart.isRecording() && data.mmac != null &&
+				!chartWaitingForFirstMeasurement) {
+			ChartTraceConfig.Trace[] styles = chartTraceConfig.snapshot();
+			if (chartSampleValues.length < styles.length)
+				chartSampleValues = new float[styles.length];
+			java.util.Arrays.fill(chartSampleValues, 0, styles.length, Float.NaN);
+			chartSampleValues[ChartTraceConfig.MAX] = data.mmac.max;
+			chartSampleValues[ChartTraceConfig.MIN] = data.mmac.min;
+			chartSampleValues[ChartTraceConfig.CENTER] = data.mmac.center;
+			measurementManager.fillTraceValues(styles, chartSampleValues);
+			timeChart.sample(chartSampleValues, data.tempUnit);
+		}
 
 		/* At this point we are certain the frame and the overlayData are matched up with
 		 *   each-other, so now we can do stuff like taking a picture, "the frame" here
@@ -1144,7 +1163,7 @@ public class MainActivity extends BaseActivity {
 							Float.parseFloat(values[1]));
 				} catch (NumberFormatException ignored) { }
 			} else if ("setting".equals(command)) {
-				applyWebSetting(settings, value);
+				applyWebMainSetting(value);
 			} else if ("measurement".equals(command)) {
 				applyWebSetting(settingsMeasure, value);
 			} else if ("thermometry".equals(command)) {
@@ -1155,6 +1174,16 @@ public class MainActivity extends BaseActivity {
 				deleteTimeChart();
 			} else if ("chart_trace".equals(command)) {
 				applyWebChartTrace(value);
+			} else if ("chart_trace_delete".equals(command)) {
+				deleteChartTrace(value);
+			} else if ("measurement_tool".equals(command)) {
+				setMeasurementToolFromWeb(value);
+			} else if ("measurement_add".equals(command)) {
+				addMeasurementFromWeb(value);
+			} else if ("measurement_delete".equals(command)) {
+				measurementManager.remove(value);
+			} else if ("measurement_move".equals(command)) {
+				moveMeasurementFromWeb(value);
 			} else if ("record_start".equals(command)) {
 				if (usbConnection != null && !recorder.isRecording())
 					startRecording(false);
@@ -1165,6 +1194,38 @@ public class MainActivity extends BaseActivity {
 		});
 	}
 
+	private void setMeasurementToolFromWeb(String value) {
+		try {
+			measurementManager.setTool(MeasurementManager.Tool.valueOf(
+					value.trim().toUpperCase(Locale.US)));
+		} catch (IllegalArgumentException ignored) {
+			measurementManager.setTool(MeasurementManager.Tool.NONE);
+		}
+	}
+
+	private void addMeasurementFromWeb(String value) {
+		String[] parts = value.split(",", 5);
+		if (parts.length != 5) return;
+		try {
+			MeasurementManager.Tool type = MeasurementManager.Tool.valueOf(
+					parts[0].toUpperCase(Locale.US));
+			if (measurementManager.add(type, Float.parseFloat(parts[1]),
+					Float.parseFloat(parts[2]), Float.parseFloat(parts[3]),
+					Float.parseFloat(parts[4])) == null)
+				messageView.shortMessage(R.string.msg_measurement_limit);
+		} catch (IllegalArgumentException ignored) { }
+	}
+
+	private void moveMeasurementFromWeb(String value) {
+		String[] parts = value.split(",", 5);
+		if (parts.length != 5) return;
+		try {
+			measurementManager.setGeometry(parts[0], Float.parseFloat(parts[1]),
+					Float.parseFloat(parts[2]), Float.parseFloat(parts[3]),
+					Float.parseFloat(parts[4]));
+		} catch (IllegalArgumentException ignored) { }
+	}
+
 	private void applyWebChartTrace(String value) {
 		int first = value.indexOf('\t');
 		int second = first < 0 ? -1 : value.indexOf('\t', first + 1);
@@ -1173,10 +1234,38 @@ public class MainActivity extends BaseActivity {
 		String id = value.substring(0, first);
 		String field = value.substring(first + 1, second);
 		String fieldValue = value.substring(second + 1);
+		ChartTraceConfig.Trace trace = chartTraceConfig.find(id);
+		if (trace == null) return;
+		if ("show".equals(field) && trace.measurementSetting != null) {
+			settingsMeasure.setFromWeb(trace.measurementSetting, fieldValue);
+			return;
+		}
 		if (chartTraceConfig.update(id, field, fieldValue)) {
 			timeChart.setTraceStyles(chartTraceConfig.snapshot());
 			refreshChartPropertiesDialog();
 		}
+	}
+
+	private void deleteChartTrace(String id) {
+		ChartTraceConfig.Trace trace = chartTraceConfig == null ? null : chartTraceConfig.find(id);
+		if (trace == null || trace.builtIn || !chartTraceConfig.removeCustomTrace(id)) return;
+		measurementManager.deactivateObjectsWithoutTraces();
+		timeChart.setTraceStyles(chartTraceConfig.snapshot());
+		scheduleMeasurementGestureRedraw();
+		if (chartPropertiesDialog != null && chartPropertiesDialog.isShowing()) {
+			chartPropertiesDialog.dismiss();
+			handler.post(this::showChartPropertiesDialog);
+		}
+	}
+
+	private void applyWebMainSetting(String value) {
+		int separator = value.indexOf('=');
+		if (separator <= 0) return;
+		String name = value.substring(0, separator);
+		Settings target = "chart_sample_rate".equals(name) ||
+				"chart_average_samples".equals(name) ||
+				"export_chart_separately".equals(name) ? settingsChart : settings;
+		target.setFromWeb(name, value.substring(separator + 1));
 	}
 
 	private static void applyWebSetting(Settings target, String value) {
@@ -1205,8 +1294,7 @@ public class MainActivity extends BaseActivity {
 						"\"intervalNs\":100000000,\"unit\":0,\"showMax\":false," +
 						"\"showMin\":false,\"showCenter\":false,\"exportSeparately\":false," +
 						"\"imageType\":2,\"imageQuality\":92,\"viewWidth\":0,\"viewHeight\":0," +
-						"\"max\":[],\"min\":[]," +
-						"\"center\":[]}" :
+						"\"traces\":[],\"series\":{}}" :
 				chart.getWebStateJson(timeChartState, generation, from,
 						exportChartSeparately, imgType, imgQuality, recorder.isRecording());
 
@@ -1303,6 +1391,11 @@ public class MainActivity extends BaseActivity {
 				.append(",\"maxX\":").append(maxX).append(",\"maxY\":").append(maxY)
 				.append(",\"centerX\":").append(centerX).append(",\"centerY\":").append(centerY)
 				.append('}')
+				.append(",\"measurementTool\":\"")
+				.append(MeasurementManager.toolName(measurementManager.getTool())).append('"')
+				.append(",\"measurementObjects\":");
+		measurementManager.appendWebJson(json);
+		json
 				.append(",\"battery\":{\"level\":").append(batteryPercent)
 				.append(",\"charging\":").append(batteryCharging)
 				.append(",\"visible\":").append(batteryVisible).append('}')
@@ -1396,7 +1489,13 @@ public class MainActivity extends BaseActivity {
 
 	private void toggleTimeChart() {
 		if (timeChartState == 0) {
+			// Drop history-only series left by objects which are no longer on the thermogram.
+			measurementManager.pruneInactiveTraces();
+			timeChart.setTraceStyles(chartTraceConfig.snapshot());
 			timeChartState = 1;
+			/* An empty chart has no arbitrary wall-clock lead-in. Its first custom
+			 * thermogram measurement defines t=0 and sampling begins with that frame. */
+			chartWaitingForFirstMeasurement = !hasEnabledChartMeasurement();
 			timeChart.start(overlayData.tempUnit, overlayData.showMax,
 					 overlayData.showMin, overlayData.showCenter,
 					 (long) (chartSampleRateSeconds * 1_000_000_000L),
@@ -1417,6 +1516,8 @@ public class MainActivity extends BaseActivity {
 			buttonTimeChart.setColorFilter(Color.YELLOW);
 		} else {
 			timeChartState = 1;
+			if (chartWaitingForFirstMeasurement && hasEnabledChartMeasurement())
+				chartWaitingForFirstMeasurement = false;
 			timeChart.resume();
 			setVideoPausedForChart(false);
 			buttonTimeChart.setColorFilter(Color.RED);
@@ -1438,26 +1539,136 @@ public class MainActivity extends BaseActivity {
 		if (timeChartState == 0 || timeChart == null)
 			return;
 		timeChartState = 0;
+		chartWaitingForFirstMeasurement = false;
 		setVideoPausedForChart(false);
 		timeChart.clear();
+		measurementManager.pruneInactiveTraces();
+		timeChart.setTraceStyles(chartTraceConfig.snapshot());
 		timeChart.setVisibility(View.GONE);
 		buttonTimeChart.setColorFilter(null);
 		updateTimeChartLayout();
 	}
 
+	private void onMeasurementsChanged() {
+		handler.post(() -> {
+			if (timeChartState == 1 && chartWaitingForFirstMeasurement &&
+					hasEnabledChartMeasurement())
+				chartWaitingForFirstMeasurement = false;
+			if (timeChart != null)
+				timeChart.setTraceStyles(chartTraceConfig.snapshot());
+			if (chartPropertiesDialog != null && chartPropertiesDialog.isShowing()) {
+				chartPropertiesDialog.dismiss();
+				showChartPropertiesDialog();
+			}
+			updateMeasurementToolButton();
+		});
+	}
+
+	/** Global switches and visible custom object traces are equally valid chart sources. */
+	private boolean hasEnabledChartMeasurement() {
+		ChartTraceConfig.Trace[] traces = chartTraceConfig == null ? null :
+				chartTraceConfig.snapshot();
+		if (traces == null) return false;
+		for (int i = 0; i < traces.length; ++i) {
+			ChartTraceConfig.Trace trace = traces[i];
+			if (trace.show && (trace.builtIn || measurementManager.isTraceActive(trace.id)))
+				return true;
+		}
+		return false;
+	}
+
+	private void scheduleMeasurementGestureRedraw() {
+		if (measurementRedrawPending || cameraView == null) return;
+		measurementRedrawPending = true;
+		cameraView.postOnAnimation(measurementGestureRedraw);
+	}
+
+	private void updateMeasurementToolButton() {
+		if (buttonMeasurementTools == null || measurementManager == null) return;
+		MeasurementManager.Tool selected = measurementManager.getTool();
+		int icon = selected == MeasurementManager.Tool.LINE ? R.drawable.ic_measure_line_24 :
+				selected == MeasurementManager.Tool.RECTANGLE ? R.drawable.ic_measure_rectangle_24 :
+				selected == MeasurementManager.Tool.POINT ? R.drawable.ic_measure_point_24 :
+				R.drawable.ic_baseline_location_searching_24;
+		buttonMeasurementTools.setImageResource(icon);
+		buttonMeasurementTools.setColorFilter(selected == MeasurementManager.Tool.NONE ?
+				Color.WHITE : Color.RED);
+	}
+
+	private void showMeasurementToolsPopup() {
+		if (buttonMeasurementTools == null || settingsMeasure == null) return;
+		if (measurementToolsPopup != null && measurementToolsPopup.isShowing()) {
+			measurementToolsPopup.dismiss();
+			return;
+		}
+		LinearLayout tools = new LinearLayout(this);
+		tools.setOrientation(LinearLayout.VERTICAL);
+		tools.setPadding(dp(4), dp(4), dp(4), dp(4));
+		GradientDrawable background = new GradientDrawable();
+		background.setColor(Color.rgb(45, 45, 45));
+		background.setCornerRadius(dp(6));
+		background.setStroke(dp(1), Color.GRAY);
+		tools.setBackground(background);
+		addMeasurementPopupButton(tools, R.drawable.ic_measure_point_24,
+				R.string.btn_measure_point, MeasurementManager.Tool.POINT);
+		addMeasurementPopupButton(tools, R.drawable.ic_measure_line_24,
+				R.string.btn_measure_line, MeasurementManager.Tool.LINE);
+		addMeasurementPopupButton(tools, R.drawable.ic_measure_rectangle_24,
+				R.string.btn_measure_rectangle, MeasurementManager.Tool.RECTANGLE);
+		ImageButton settingsButton = new ImageButton(this);
+		settingsButton.setImageResource(R.drawable.ic_baseline_location_searching_24);
+		settingsButton.setContentDescription(getString(R.string.btn_settings_measure));
+		settingsButton.setColorFilter(Color.WHITE);
+		settingsButton.setBackgroundResource(android.R.drawable.list_selector_background);
+		settingsButton.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
+		settingsButton.setOnClickListener(view -> {
+			measurementManager.setTool(MeasurementManager.Tool.NONE);
+			measurementToolsPopup.dismiss();
+			showSettings(settingsMeasure);
+		});
+		tools.addView(settingsButton);
+		measurementToolsPopup = new PopupWindow(tools, dp(56),
+				ViewGroup.LayoutParams.WRAP_CONTENT, true);
+		measurementToolsPopup.setOutsideTouchable(true);
+		measurementToolsPopup.setElevation(dp(8));
+		measurementToolsPopup.setOnDismissListener(() -> measurementToolsPopup = null);
+		measurementToolsPopup.showAsDropDown(buttonMeasurementTools,
+				buttonMeasurementTools.getWidth(), -buttonMeasurementTools.getHeight());
+	}
+
+	private void addMeasurementPopupButton(LinearLayout parent, int icon, int description,
+			MeasurementManager.Tool tool) {
+		ImageButton button = new ImageButton(this);
+		button.setImageResource(icon);
+		button.setContentDescription(getString(description));
+		button.setColorFilter(measurementManager.getTool() == tool ? Color.RED : Color.WHITE);
+		button.setBackgroundResource(android.R.drawable.list_selector_background);
+		button.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
+		button.setOnClickListener(view -> {
+			measurementManager.setTool(tool);
+			if (measurementToolsPopup != null) measurementToolsPopup.dismiss();
+		});
+		parent.addView(button);
+	}
+
 	private void showChartPropertiesDialog() {
-		if (chartTraceConfig == null || settingsMeasure == null)
+		if (chartTraceConfig == null || settingsMeasure == null || settingsChart == null)
 			return;
 		if (chartPropertiesDialog != null && chartPropertiesDialog.isShowing())
 			return;
+		if (settingsChart.getParent() instanceof ViewGroup)
+			((ViewGroup) settingsChart.getParent()).removeView(settingsChart);
+		compactChartSettingsView(settingsChart);
+
 		TableLayout table = new TableLayout(this);
-		table.setPadding(dp(8), dp(4), dp(8), dp(4));
+		table.setPadding(dp(4), 0, dp(4), dp(2));
 		table.setStretchAllColumns(false);
 		TableRow header = new TableRow(this);
-		addChartTableHeader(header, R.string.chart_trace_name, 132);
-		addChartTableHeader(header, R.string.chart_line_width, 84);
-		addChartTableHeader(header, R.string.chart_color, 104);
-		addChartTableHeader(header, R.string.chart_show, 64);
+		addChartTableHeader(header, R.string.chart_trace_name, 106);
+		addChartTableHeader(header, R.string.chart_line_width, 64);
+		addChartTableHeader(header, R.string.chart_color, 74);
+		addChartTableHeader(header, R.string.chart_show, 48);
+		addChartTableHeader(header, R.string.chart_delete, 48);
 		table.addView(header);
 
 		ChartTraceConfig.Trace[] traces = chartTraceConfig.snapshot();
@@ -1474,9 +1685,12 @@ public class MainActivity extends BaseActivity {
 			EditText name = new EditText(this);
 			name.setSingleLine(true);
 			name.setText(trace.name);
+			name.setTextSize(14);
+			name.setMinHeight(0);
+			name.setPadding(dp(4), 0, dp(4), 0);
 			name.setSelectAllOnFocus(true);
 			name.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
-			name.setLayoutParams(chartCellParams(132));
+			name.setLayoutParams(chartCellParams(106, 38));
 			name.setOnFocusChangeListener((view, focused) -> {
 				if (!focused) updateTraceProperty(traceIndex, "name", name.getText().toString());
 			});
@@ -1494,11 +1708,14 @@ public class MainActivity extends BaseActivity {
 			EditText width = new EditText(this);
 			width.setSingleLine(true);
 			width.setText(String.format(Locale.US, "%g", trace.lineWidth));
+			width.setTextSize(14);
+			width.setMinHeight(0);
+			width.setPadding(dp(4), 0, dp(4), 0);
 			width.setSelectAllOnFocus(true);
 			width.setInputType(InputType.TYPE_CLASS_NUMBER |
 					InputType.TYPE_NUMBER_FLAG_DECIMAL);
 			width.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
-			width.setLayoutParams(chartCellParams(84));
+			width.setLayoutParams(chartCellParams(64, 38));
 			width.setOnFocusChangeListener((view, focused) -> {
 				if (!focused) updateTraceWidth(traceIndex, width);
 			});
@@ -1516,8 +1733,12 @@ public class MainActivity extends BaseActivity {
 			Button color = new Button(this);
 			color.setAllCaps(false);
 			color.setText(ChartTraceConfig.colorHex(trace.color));
+			color.setTextSize(11);
+			color.setMinWidth(0);
+			color.setMinHeight(0);
+			color.setPadding(dp(3), 0, dp(3), 0);
 			color.setTextColor(contrastTextColor(trace.color));
-			color.setLayoutParams(chartCellParams(104));
+			color.setLayoutParams(chartCellParams(74, 38));
 			styleTraceColorButton(color, trace.color);
 			color.setOnClickListener(view -> showTraceColorPicker(traceIndex, color));
 			chartTraceColorButtons[traceIndex] = color;
@@ -1525,24 +1746,56 @@ public class MainActivity extends BaseActivity {
 
 			CheckBox show = new CheckBox(this);
 			show.setGravity(Gravity.CENTER);
+			show.setMinWidth(0);
+			show.setMinHeight(0);
+			show.setPadding(0, 0, 0, 0);
 			show.setChecked(isTraceShown(traceIndex));
-			show.setLayoutParams(chartCellParams(64));
+			show.setLayoutParams(chartCellParams(48, 38));
 			show.setOnCheckedChangeListener((view, checked) ->
 					setTraceShownFromProperties(traceIndex, checked));
 			chartTraceShowBoxes[traceIndex] = show;
 			row.addView(show);
+
+			ImageButton delete = new ImageButton(this);
+			delete.setImageResource(android.R.drawable.ic_menu_delete);
+			delete.setColorFilter(Color.WHITE);
+			delete.setContentDescription(getString(R.string.chart_delete_trace));
+			delete.setBackgroundResource(android.R.drawable.list_selector_background);
+			delete.setPadding(dp(7), dp(7), dp(7), dp(7));
+			delete.setLayoutParams(chartCellParams(48, 38));
+			if (trace.builtIn) delete.setVisibility(View.INVISIBLE);
+			else delete.setOnClickListener(view -> deleteChartTrace(trace.id));
+			row.addView(delete);
 			table.addView(row);
 		}
 
 		HorizontalScrollView scroll = new HorizontalScrollView(this);
-		scroll.setFillViewport(true);
+		scroll.setFillViewport(false);
 		scroll.addView(table);
+		LinearLayout content = new LinearLayout(this);
+		content.setOrientation(LinearLayout.VERTICAL);
+		content.addView(settingsChart, new LinearLayout.LayoutParams(
+				ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+		content.addView(scroll, new LinearLayout.LayoutParams(
+				ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+		final int maxContentHeight = Math.round(
+				getResources().getDisplayMetrics().heightPixels * 0.70f);
+		ScrollView verticalScroll = new ScrollView(this) {
+			@Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+				super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(
+						maxContentHeight, View.MeasureSpec.AT_MOST));
+			}
+		};
+		verticalScroll.setFillViewport(false);
+		verticalScroll.addView(content);
 		chartPropertiesDialog = new AlertDialog.Builder(this)
 				.setTitle(R.string.chart_properties)
-				.setView(scroll)
+				.setView(verticalScroll)
 				.setPositiveButton(android.R.string.ok, null)
 				.create();
 		chartPropertiesDialog.setOnDismissListener(dialog -> {
+			if (settingsChart.getParent() instanceof ViewGroup)
+				((ViewGroup) settingsChart.getParent()).removeView(settingsChart);
 			chartPropertiesDialog = null;
 			chartTraceShowBoxes = new CheckBox[0];
 			chartTraceNameFields = new EditText[0];
@@ -1550,19 +1803,54 @@ public class MainActivity extends BaseActivity {
 			chartTraceColorButtons = new Button[0];
 		});
 		chartPropertiesDialog.show();
+		resizeChartPropertiesDialog();
+	}
+
+	private void resizeChartPropertiesDialog() {
+		if (chartPropertiesDialog == null || !chartPropertiesDialog.isShowing() ||
+				chartPropertiesDialog.getWindow() == null) return;
+		int width = Math.min(Math.round(
+				getResources().getDisplayMetrics().widthPixels * 0.92f), dp(408));
+		chartPropertiesDialog.getWindow().setLayout(width,
+				ViewGroup.LayoutParams.WRAP_CONTENT);
+	}
+
+	private void compactChartSettingsView(View view) {
+		view.setMinimumHeight(0);
+		if (view instanceof EditText) {
+			EditText input = (EditText) view;
+			input.setTextSize(14);
+			input.setPadding(dp(4), 0, dp(4), 0);
+			ViewGroup.LayoutParams params = input.getLayoutParams();
+			if (params != null) params.height = dp(36);
+		} else if (view instanceof CheckBox) {
+			CheckBox box = (CheckBox) view;
+			box.setTextSize(14);
+			box.setPadding(0, 0, 0, 0);
+		} else if (view instanceof TextView) {
+			((TextView) view).setTextSize(14);
+		}
+		if (view instanceof ViewGroup) {
+			ViewGroup group = (ViewGroup) view;
+			for (int i = 0; i < group.getChildCount(); ++i)
+				compactChartSettingsView(group.getChildAt(i));
+		}
+		if (view == settingsChart) view.setPadding(dp(8), 0, dp(8), dp(2));
 	}
 
 	private void addChartTableHeader(TableRow row, int textResource, int widthDp) {
 		TextView text = new TextView(this);
 		text.setText(textResource);
 		text.setGravity(Gravity.CENTER);
-		text.setPadding(dp(4), dp(8), dp(4), dp(8));
-		text.setLayoutParams(chartCellParams(widthDp));
+		text.setSingleLine(true);
+		text.setTextSize(11);
+		text.setPadding(dp(2), dp(3), dp(2), dp(3));
+		text.setLayoutParams(chartCellParams(widthDp, 30));
 		row.addView(text);
 	}
 
-	private TableRow.LayoutParams chartCellParams(int widthDp) {
-		return new TableRow.LayoutParams(dp(widthDp), ViewGroup.LayoutParams.WRAP_CONTENT);
+	private TableRow.LayoutParams chartCellParams(int widthDp, int heightDp) {
+		return new TableRow.LayoutParams(dp(widthDp), dp(heightDp));
 	}
 
 	private void updateTraceWidth(int index, EditText input) {
@@ -1588,13 +1876,27 @@ public class MainActivity extends BaseActivity {
 			return;
 		final int[] selected = {traces[index].color};
 		ChartColorPickerView picker = new ChartColorPickerView(this);
-		picker.setLayoutParams(new ViewGroup.LayoutParams(
-				ViewGroup.LayoutParams.MATCH_PARENT, dp(260)));
+		final int pickerSide = Math.round(Math.min(getResources().getDisplayMetrics().widthPixels,
+				getResources().getDisplayMetrics().heightPixels) * 0.70f);
+		/* AlertController replaces the direct custom view's LayoutParams with MATCH_PARENT.
+		 * Keep the picker inside an exactly measured square so portrait dialogs cannot
+		 * stretch its saturation/value gradient to the full available height. */
+		FrameLayout pickerHolder = new FrameLayout(this) {
+			@Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+				int exactSide = View.MeasureSpec.makeMeasureSpec(pickerSide,
+						View.MeasureSpec.EXACTLY);
+				super.onMeasure(exactSide, exactSide);
+				setMeasuredDimension(pickerSide, pickerSide);
+			}
+		};
+		pickerHolder.addView(picker, new FrameLayout.LayoutParams(
+				ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+				Gravity.CENTER));
 		picker.setColor(selected[0]);
 		picker.setListener(color -> selected[0] = color);
-		new AlertDialog.Builder(this)
+		AlertDialog colorDialog = new AlertDialog.Builder(this)
 				.setTitle(R.string.chart_pick_color)
-				.setView(picker)
+				.setView(pickerHolder)
 				.setPositiveButton(android.R.string.ok, (dialog, which) -> {
 					updateTraceProperty(index, "color", ChartTraceConfig.colorHex(selected[0]));
 					ChartTraceConfig.Trace updated = chartTraceConfig.snapshot()[index];
@@ -1603,7 +1905,12 @@ public class MainActivity extends BaseActivity {
 					styleTraceColorButton(swatch, updated.color);
 				})
 				.setNegativeButton(android.R.string.cancel, null)
-				.show();
+				.create();
+		colorDialog.show();
+		if (colorDialog.getWindow() != null)
+			colorDialog.getWindow().setLayout(Math.min(
+					getResources().getDisplayMetrics().widthPixels - dp(16), pickerSide + dp(48)),
+					ViewGroup.LayoutParams.WRAP_CONTENT);
 	}
 
 	private void styleTraceColorButton(Button button, int color) {
@@ -1621,17 +1928,19 @@ public class MainActivity extends BaseActivity {
 	}
 
 	private boolean isTraceShown(int trace) {
-		synchronized (frameLock) {
-			return trace == ChartTraceConfig.MAX ? overlayData.showMax :
-					trace == ChartTraceConfig.MIN ? overlayData.showMin : overlayData.showCenter;
-		}
+		ChartTraceConfig.Trace[] traces = chartTraceConfig.snapshot();
+		return trace >= 0 && trace < traces.length && traces[trace].show;
 	}
 
 	private void setTraceShownFromProperties(int trace, boolean shown) {
 		ChartTraceConfig.Trace[] traces = chartTraceConfig.snapshot();
-		if (trace >= 0 && trace < traces.length)
-			settingsMeasure.setFromWeb(traces[trace].measurementSetting,
-					Boolean.toString(shown));
+		if (trace < 0 || trace >= traces.length) return;
+		if (traces[trace].measurementSetting != null)
+			settingsMeasure.setFromWeb(traces[trace].measurementSetting, Boolean.toString(shown));
+		else if (chartTraceConfig.setVisible(traces[trace].id, shown)) {
+			timeChart.setTraceStyles(chartTraceConfig.snapshot());
+			refreshChartPropertiesDialog();
+		}
 	}
 
 	private void refreshChartPropertiesDialog() {
@@ -1780,110 +2089,6 @@ public class MainActivity extends BaseActivity {
 		infiCam.lockShutter();
 	}
 
-	void showSpatialCalibrationDialog() {
-		if (spatialCalibrationController == null ||
-				!spatialCalibrationController.isCameraReady()) {
-			messageView.showMessage(R.string.msg_no_frame);
-			return;
-		}
-		if (spatialCalibrationController.isActive()) {
-			showSpatialCalibrationProgress(spatialCalibrationController.getState(),
-					0.0f, "Autocalibration is running…");
-			return;
-		}
-		String shutterInstruction = getString(
-				spatialCalibrationController.canHoldShutterClosed() ?
-						R.string.spatial_calibration_shutter :
-						R.string.spatial_calibration_cover);
-		new AlertDialog.Builder(this)
-				.setTitle(R.string.spatial_calibration_title)
-				.setMessage(getString(R.string.spatial_calibration_intro) +
-						"\n\n" + shutterInstruction)
-				.setPositiveButton("Start", (dialog, which) -> {
-					spatialCalibrationController.start();
-					showSpatialCalibrationProgress(CalibrationController.State.PREPARING,
-							0.0f, "Preparing spatial calibration…");
-				})
-				.setNegativeButton("Cancel", null)
-				.show();
-	}
-
-	private void onSpatialCalibrationState(CalibrationController.State state,
-			float progress, String detail) {
-		handler.post(() -> handleSpatialCalibrationState(state, progress, detail));
-	}
-
-	private void handleSpatialCalibrationState(CalibrationController.State state,
-			float progress, String detail) {
-		boolean active = state == CalibrationController.State.PREPARING ||
-				state == CalibrationController.State.COLLECTING ||
-				state == CalibrationController.State.VALIDATING ||
-				state == CalibrationController.State.COMMITTING;
-		setSpatialCalibrationControls(active);
-		if (active) {
-			showSpatialCalibrationProgress(state, progress, detail);
-			return;
-		}
-		dismissSpatialCalibrationProgress();
-		if (state == CalibrationController.State.COMPLETED ||
-				state == CalibrationController.State.CANCELLED ||
-				state == CalibrationController.State.FAILED) {
-			messageView.showMessage(detail);
-		}
-	}
-
-	private void setSpatialCalibrationControls(boolean active) {
-		if (active) {
-			setViewTreeEnabled(buttonsLeft, false);
-			setViewTreeEnabled(buttonsRight, false);
-			setViewTreeEnabled(rangeSlider, false);
-			if (cameraView != null)
-				cameraView.setEnabled(false);
-			if (dialogBackground != null && dialogBackground.getVisibility() == View.VISIBLE)
-				hideSettingsDialog();
-		} else if (!calibrationUiActive) {
-			setViewTreeEnabled(buttonsLeft, true);
-			setViewTreeEnabled(buttonsRight, true);
-			setViewTreeEnabled(rangeSlider, true);
-			if (cameraView != null)
-				cameraView.setEnabled(true);
-		}
-	}
-
-	private void showSpatialCalibrationProgress(CalibrationController.State state,
-			float progress, String detail) {
-		String message = detail + "\n" + Math.round(Math.max(0.0f,
-				Math.min(1.0f, progress)) * 100.0f) + "%";
-		if (spatialCalibrationProgressDialog == null ||
-				!spatialCalibrationProgressDialog.isShowing()) {
-			spatialCalibrationProgressDialog = new AlertDialog.Builder(this)
-					.setTitle(R.string.spatial_calibration_title)
-					.setMessage(message)
-					.setNegativeButton("Cancel", (dialog, which) -> {
-						if (spatialCalibrationController != null)
-							spatialCalibrationController.cancel();
-					})
-					.create();
-			spatialCalibrationProgressDialog.setCanceledOnTouchOutside(false);
-			spatialCalibrationProgressDialog.setOnCancelListener(dialog -> {
-				if (spatialCalibrationController != null)
-					spatialCalibrationController.cancel();
-			});
-			spatialCalibrationProgressDialog.show();
-		} else {
-			spatialCalibrationProgressDialog.setMessage(message);
-		}
-	}
-
-	private void dismissSpatialCalibrationProgress() {
-		if (spatialCalibrationProgressDialog != null) {
-			spatialCalibrationProgressDialog.setOnCancelListener(null);
-			if (spatialCalibrationProgressDialog.isShowing())
-				spatialCalibrationProgressDialog.dismiss();
-			spatialCalibrationProgressDialog = null;
-		}
-	}
-
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
@@ -1905,12 +2110,10 @@ public class MainActivity extends BaseActivity {
 
 		setContentView(R.layout.activity_main);
 		chartTraceConfig = new ChartTraceConfig(getApplicationContext());
+		measurementManager = new MeasurementManager(this, chartTraceConfig,
+				this::onMeasurementsChanged);
 		cameraView = findViewById(R.id.cameraView);
 		messageView = findViewById(R.id.message);
-		spatialCalibrationController = new CalibrationController(
-				new be.ntmn.libinficam.SpatialCalibrationEngine(),
-				new SpatialCalibrationStore(getApplicationContext()),
-				this::onSpatialCalibrationState);
 		surfaceMuxer = new SurfaceMuxer(this);
 
 		/* Create and set up the InputSurface for thermal image, imode setting is not final. */
@@ -1926,6 +2129,9 @@ public class MainActivity extends BaseActivity {
 				new SurfaceMuxer.InputSurface(surfaceMuxer));
 		overlayPicture = new Overlay(this,
 				new SurfaceMuxer.InputSurface(surfaceMuxer));
+		overlayScreen.setMeasurements(measurementManager);
+		overlayRecord.setMeasurements(measurementManager);
+		overlayPicture.setMeasurements(measurementManager);
 		/* Resized to the connected camera's actual oriented FrameInfo dimensions
 		 * before the first Web frame is captured. */
 		outWeb = new SurfaceMuxer.OutputSurface(surfaceMuxer, null, 1, 1);
@@ -1949,21 +2155,105 @@ public class MainActivity extends BaseActivity {
 				usbMonitor.scan();
 			}
 		});
+		final float objectDragSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+		final float objectDragSlopSquared = objectDragSlop * objectDragSlop;
 		cameraView.setOnTouchListener(new View.OnTouchListener() {
 			private boolean paletteTouch;
-			@Override public boolean onTouch(View view, android.view.MotionEvent event) {
-				if (event.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
+			private boolean drawingTouch;
+			private String objectTouchId;
+			private boolean objectMoved;
+			private float objectDownX, objectDownY;
+			@Override public boolean onTouch(View view, MotionEvent event) {
+				int action = event.getActionMasked();
+				if (action == MotionEvent.ACTION_DOWN) {
+					drawingTouch = false;
+					objectTouchId = null;
+					objectMoved = false;
 					getRect(rect, view.getWidth(), view.getHeight());
 					paletteTouch = overlayScreen.isPaletteHit((int) event.getX(), (int) event.getY(),
 							rect, overlayData.showPalette);
-					return paletteTouch;
+					if (paletteTouch) return true;
+					String hit = measurementManager.hitAt(event.getX(), event.getY(), rect,
+							overlayData, dp(18));
+					if (hit != null && measurementManager.screenToSensor(event.getX(), event.getY(),
+							rect, overlayData, measurementTouch) &&
+							measurementManager.beginMove(hit, measurementTouch[0], measurementTouch[1])) {
+						objectTouchId = hit;
+						objectDownX = event.getX(); objectDownY = event.getY();
+						return true;
+					}
+					if (measurementManager.getTool() != MeasurementManager.Tool.NONE &&
+							measurementManager.screenToSensor(event.getX(), event.getY(), rect,
+									overlayData, measurementTouch)) {
+						drawingTouch = measurementManager.begin(measurementTouch[0], measurementTouch[1]);
+						return drawingTouch;
+					}
+					return false;
 				}
-				if (paletteTouch && event.getActionMasked() == android.view.MotionEvent.ACTION_UP) {
+				if (paletteTouch && action == MotionEvent.ACTION_UP) {
 					paletteTouch = false;
 					showPaletteRangePopup();
 					return true;
 				}
-				return paletteTouch;
+				if (paletteTouch) return true;
+				if (objectTouchId != null) {
+					if (action == MotionEvent.ACTION_CANCEL) {
+						measurementManager.cancelMove();
+						objectTouchId = null;
+						scheduleMeasurementGestureRedraw();
+						return true;
+					}
+					if (action == MotionEvent.ACTION_MOVE) {
+						float dx = event.getX() - objectDownX, dy = event.getY() - objectDownY;
+						if (!objectMoved && dx * dx + dy * dy > objectDragSlopSquared)
+							objectMoved = true;
+						if (objectMoved && measurementManager.screenToSensor(event.getX(), event.getY(),
+								rect, overlayData, measurementTouch)) {
+							measurementManager.updateMove(measurementTouch[0], measurementTouch[1]);
+							scheduleMeasurementGestureRedraw();
+						}
+						return true;
+					}
+					if (action == MotionEvent.ACTION_UP) {
+						if (objectMoved) {
+							if (measurementManager.screenToSensor(event.getX(), event.getY(), rect,
+									overlayData, measurementTouch))
+								measurementManager.updateMove(measurementTouch[0], measurementTouch[1]);
+							measurementManager.finishMove();
+						} else {
+							measurementManager.cancelMove();
+							measurementManager.remove(objectTouchId);
+						}
+						objectTouchId = null;
+						scheduleMeasurementGestureRedraw();
+						view.performClick();
+					}
+					return true;
+				}
+				if (!drawingTouch) return false;
+				if (action == MotionEvent.ACTION_CANCEL) {
+					measurementManager.cancelPreview();
+					drawingTouch = false;
+					scheduleMeasurementGestureRedraw();
+					return true;
+				}
+				boolean validPoint = measurementManager.screenToSensor(event.getX(), event.getY(),
+						rect, overlayData, measurementTouch);
+				if (action == MotionEvent.ACTION_MOVE) {
+					if (validPoint) {
+						measurementManager.updatePreview(measurementTouch[0], measurementTouch[1]);
+						scheduleMeasurementGestureRedraw();
+					}
+				} else if (action == MotionEvent.ACTION_UP) {
+					if (validPoint) {
+						if (!measurementManager.finish(measurementTouch[0], measurementTouch[1]))
+							messageView.shortMessage(R.string.msg_measurement_limit);
+					} else measurementManager.cancelPreview();
+					drawingTouch = false;
+					scheduleMeasurementGestureRedraw();
+					view.performClick();
+				}
+				return true;
 			}
 		});
 		final ScaleGestureDetector.OnScaleGestureListener scaleListener =
@@ -2082,6 +2372,8 @@ public class MainActivity extends BaseActivity {
 		dialogBackground.setOnClickListener(view -> hideSettingsDialog());
 		settings = findViewById(R.id.settings);
 		settings.init(this);
+		settingsChart = new SettingsChart(this);
+		settingsChart.init(this);
 		settingsTherm = findViewById(R.id.settingsTherm); //This one has to be initialized later when we know the camera model
 		settingsMeasure = findViewById(R.id.settingsMeasure);
 		settingsMeasure.init(this);
@@ -2094,8 +2386,9 @@ public class MainActivity extends BaseActivity {
 		ImageButton buttonSettingsTherm = findViewById(R.id.buttonSettingsTherm);
 		buttonSettingsTherm.setOnClickListener(view -> showSettings(settingsTherm));
 
-		ImageButton buttonSettingsMeasure = findViewById(R.id.buttonSettingsMeasure);
-		buttonSettingsMeasure.setOnClickListener(view -> showSettings(settingsMeasure));
+		buttonMeasurementTools = findViewById(R.id.buttonSettingsMeasure);
+		buttonMeasurementTools.setOnClickListener(view -> showMeasurementToolsPopup());
+		updateMeasurementToolButton();
 
 		ImageButton buttonGallery = findViewById(R.id.buttonGallery);
 		buttonGallery.setOnClickListener(view -> {
@@ -2129,6 +2422,7 @@ public class MainActivity extends BaseActivity {
 		super.onStart();
 		activityStarted = true;
 		settings.load();
+		settingsChart.load();
 		settingsMeasure.load();
 		settingsPalette.load();
 		DisplayManager displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
@@ -2196,9 +2490,8 @@ public class MainActivity extends BaseActivity {
 		handler.removeCallbacks(reconnectRunnable);
 		if (chartPropertiesDialog != null && chartPropertiesDialog.isShowing())
 			chartPropertiesDialog.dismiss();
-		if (spatialCalibrationController != null)
-			spatialCalibrationController.cancel();
-		dismissSpatialCalibrationProgress();
+		if (measurementToolsPopup != null && measurementToolsPopup.isShowing())
+			measurementToolsPopup.dismiss();
 		if (imgCompressThread != null) {
 			imgCompressThread.shutdown();
 			imgCompressThread = null;
@@ -2224,10 +2517,6 @@ public class MainActivity extends BaseActivity {
 
 	@Override
 	protected void onDestroy() {
-		if (spatialCalibrationController != null) {
-			spatialCalibrationController.close();
-			spatialCalibrationController = null;
-		}
 		if (outWeb != null) {
 			outWeb.release();
 			outWeb = null;
@@ -2397,7 +2686,10 @@ public class MainActivity extends BaseActivity {
 		/* Configuration is authoritative for layout direction; the display rotation
 		 * callback can arrive one frame earlier while returning from landscape. */
 		if (rangeSlider != null)
-			handler.post(this::updateOrientation);
+			handler.post(() -> {
+				updateOrientation();
+				resizeChartPropertiesDialog();
+			});
 	}
 
 	@Override
@@ -2470,9 +2762,6 @@ public class MainActivity extends BaseActivity {
 		overTempLockoutActive = false;
 		stopRecording();
 		disconnecting = true;
-		if (spatialCalibrationController != null)
-			spatialCalibrationController.detachCamera();
-		thermalCameraHal = null;
 		UsbDeviceConnection oldConnection;
 		synchronized (usbLifecycleLock) {
 			oldConnection = usbConnection;
@@ -2654,8 +2943,8 @@ public class MainActivity extends BaseActivity {
 		synchronized (frameLock) {
 			overlayData.showCenter = value;
 		}
-		if (timeChart != null)
-			timeChart.setTraceVisibility(ChartTraceConfig.CENTER, value);
+		chartTraceConfig.setVisible("center", value);
+		if (timeChart != null) timeChart.setTraceStyles(chartTraceConfig.snapshot());
 		refreshChartPropertiesDialog();
 	}
 
@@ -2663,8 +2952,8 @@ public class MainActivity extends BaseActivity {
 		synchronized (frameLock) {
 			overlayData.showMax = value;
 		}
-		if (timeChart != null)
-			timeChart.setTraceVisibility(ChartTraceConfig.MAX, value);
+		chartTraceConfig.setVisible("max", value);
+		if (timeChart != null) timeChart.setTraceStyles(chartTraceConfig.snapshot());
 		refreshChartPropertiesDialog();
 	}
 
@@ -2672,8 +2961,8 @@ public class MainActivity extends BaseActivity {
 		synchronized (frameLock) {
 			overlayData.showMin = value;
 		}
-		if (timeChart != null)
-			timeChart.setTraceVisibility(ChartTraceConfig.MIN, value);
+		chartTraceConfig.setVisible("min", value);
+		if (timeChart != null) timeChart.setTraceStyles(chartTraceConfig.snapshot());
 		refreshChartPropertiesDialog();
 	}
 

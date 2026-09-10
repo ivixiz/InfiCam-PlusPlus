@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../Rust/esprust"
+		},
+		{
+			"path": "../../Rust/espbridge"
+		}
+	],
+	"settings": {}
+}

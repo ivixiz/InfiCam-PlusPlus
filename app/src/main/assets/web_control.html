@@ -100,8 +100,10 @@
     }
     #thermal-overlay {
       position: absolute;
-      pointer-events: none;
+      pointer-events: auto;
+      touch-action: none;
     }
+    #thermal-overlay.measurement-active { cursor: crosshair; }
     #viewer.chart-on #chart-wrap { display: block; }
     #controls-scroll {
       width: 100%;
@@ -123,6 +125,15 @@
     button { flex: 0 0 auto; white-space: nowrap; padding: 5px 10px; }
     button.active { color: #fff; border-color: #d33; background: #8b1a1a; }
     button.paused { color: #fff; border-color: #d6ad00; background: #776000; }
+    #measurement-tools { position: relative; flex: 0 0 auto; }
+    #measurement-menu {
+      display: none; position: fixed; z-index: 19; left: 0; top: 0;
+      min-width: 190px; padding: 5px; border: 1px solid #777; border-radius: 6px;
+      max-height: calc(100vh - 12px); overflow-y: auto;
+      background: #292929; box-shadow: 0 3px 12px #000; text-align: left;
+    }
+    #measurement-menu.open { display: grid; gap: 4px; }
+    #measurement-menu button { width: 100%; text-align: left; }
     #palette-range {
       display: none;
       justify-content: center;
@@ -192,14 +203,17 @@
     .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 16px; margin-top: 12px; }
     .settings-grid label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .settings-grid input:not([type=checkbox]), .settings-grid select { width: min(150px, 48%); }
-    .trace-table { width: 100%; margin-top: 12px; border-collapse: collapse; }
-    .trace-table th, .trace-table td { padding: 7px 6px; border-bottom: 1px solid #555; }
+    .chart-settings { margin-top: 8px; padding-bottom: 5px; border-bottom: 1px solid #555; }
+    .trace-table { width: 100%; margin-top: 7px; border-collapse: collapse; }
+    .trace-table th, .trace-table td { padding: 4px 3px; border-bottom: 1px solid #555; }
     .trace-table th { color: #ccc; font-size: 13px; }
-    .trace-table input[type=text] { width: 100%; min-width: 90px; }
-    .trace-table input[type=number] { width: 72px; }
+    .trace-table input[type=text] { width: 100%; min-width: 76px; }
+    .trace-table input[type=number] { width: 60px; }
     .trace-table input[type=color] {
-      width: 58px; height: 32px; padding: 2px; border: 1px solid #888; cursor: pointer;
+      width: 48px; height: 30px; padding: 2px; border: 1px solid #888; cursor: pointer;
     }
+    .trace-actions { text-align: center; }
+    .trace-delete { padding: 4px 7px; font-size: 17px; line-height: 1; }
     .trace-table td:last-child, .trace-table th:last-child { text-align: center; }
     #status { min-height: 1.2em; margin-bottom: 5px; color: #bbb; font-size: 13px; }
     @media (max-width: 760px) {
@@ -235,7 +249,15 @@
       <button type="button" onclick="sendCommand('calibrate')">Calibrate</button>
       <button type="button" onclick="openModal('settings-modal')">Settings</button>
       <button id="thermometry-button" type="button" onclick="openModal('thermometry-modal')">Thermometry Settings</button>
-      <button type="button" onclick="openModal('measurement-modal')">Measurement Settings</button>
+      <div id="measurement-tools">
+        <button id="measurement-tool-button" type="button" onclick="toggleMeasurementMenu()">Measurements ▴</button>
+        <div id="measurement-menu">
+          <button type="button" onclick="selectMeasurementTool('point')">⊙ Add point</button>
+          <button type="button" onclick="selectMeasurementTool('line')">╱ Add line</button>
+          <button type="button" onclick="selectMeasurementTool('rectangle')">▭ Add rectangle</button>
+          <button type="button" onclick="openMeasurementSettings()">⚙ Measurement Settings</button>
+        </div>
+      </div>
       <button id="chart-button" type="button">Time Chart</button>
       <button onclick="savePicture()">Save Picture</button>
       <button id="record" onclick="toggleRecording()">Record Video</button>
@@ -277,9 +299,6 @@
         <label>Video resolution<select data-setting="vid_res"><option value="0">320×240</option><option value="1">640×480</option><option value="2">800×600</option><option value="3">1024×768</option><option value="4">1600×1200</option><option value="5">1280×720</option><option value="6">1920×1080</option></select></label>
         <label>Orientation<select data-setting="orientation"><option value="0">Automatic</option><option value="1">Landscape</option><option value="2">Portrait</option><option value="3">Reverse landscape</option></select></label>
         <label>Temperature unit<select data-setting="unit"><option value="0">Celsius</option><option value="1">Fahrenheit</option><option value="2">Kelvin</option><option value="3">Rankine</option></select></label>
-        <label>Chart sample rate (s)<input data-setting="chart_sample_rate" type="number" min="0.04" max="1800" step="0.01"></label>
-        <label>Average per sample<input data-setting="chart_average_samples" type="number" min="1" max="16" step="1"></label>
-        <label>Export chart separately<input data-setting="export_chart_separately" type="checkbox"></label>
       </div>
     </div>
   </div>
@@ -315,8 +334,13 @@
   <div id="chart-properties-modal" class="modal" onclick="modalBackdrop(event)">
     <div class="modal-card">
       <div class="modal-head"><h3>Chart Properties</h3><button onclick="closeModal('chart-properties-modal')">Close</button></div>
+      <div class="settings-grid chart-settings">
+        <label>Chart sample rate (s)<input data-setting="chart_sample_rate" type="number" min="0.04" max="1800" step="0.01"></label>
+        <label>Average per sample<input data-setting="chart_average_samples" type="number" min="1" max="16" step="1"></label>
+        <label>Export chart separately<input data-setting="export_chart_separately" type="checkbox"></label>
+      </div>
       <table class="trace-table">
-        <thead><tr><th>Trace name</th><th>Line width</th><th>Color</th><th>Show</th></tr></thead>
+        <thead><tr><th>Trace name</th><th>Line width</th><th>Color</th><th>Show</th><th>Delete</th></tr></thead>
         <tbody id="trace-table-body"></tbody>
       </table>
     </div>
@@ -349,12 +373,20 @@
     const batteryCharge = document.getElementById('battery-charge');
     const batteryText = document.getElementById('battery-text');
     const traceTableBody = document.getElementById('trace-table-body');
-    const data = { generation: -1, max: [], min: [], center: [] };
+    const measurementToolButton = document.getElementById('measurement-tool-button');
+    const measurementMenu = document.getElementById('measurement-menu');
+    // Move the popup outside the horizontally scrolling toolbar so its vertical overflow is
+    // never clipped. This is especially important in mobile Firefox.
+    document.body.appendChild(measurementMenu);
+    const data = {
+      generation: -1, count: 0, series: Object.create(null), bounds: Object.create(null)
+    };
     const defaultTraces = [
       { id: 'max', measurement: 'showmax', name: 'Tmax', lineWidth: 2, color: '#ff0000', show: true },
       { id: 'min', measurement: 'showmin', name: 'Tmin', lineWidth: 2, color: '#0000ff', show: true },
       { id: 'center', measurement: 'showcenter', name: 'Tcenter', lineWidth: 2, color: '#ff0000', show: true }
     ];
+    const timeStepMultipliers = [1, 2, 5, 10];
     let meta = {
       state: 0, intervalNs: 100000000, unit: 0,
       showMax: false, showMin: false, showCenter: false,
@@ -370,6 +402,7 @@
     let streamRetryTimer = 0;
     let chartHoldTimer = 0;
     let chartHeld = false;
+    let measurementPointer = null;
     const waitingStatus = 'Waiting for phone state...';
 
     function sendCommand(name, value = '') {
@@ -381,6 +414,31 @@
     function closeModal(id) { document.getElementById(id).classList.remove('open'); }
     function modalBackdrop(event) {
       if (event.target.classList.contains('modal')) event.target.classList.remove('open');
+    }
+
+    function positionMeasurementMenu() {
+      if (!measurementMenu.classList.contains('open')) return;
+      const anchor = measurementToolButton.getBoundingClientRect();
+      const popup = measurementMenu.getBoundingClientRect();
+      const margin = 6;
+      const left = Math.max(margin,
+        Math.min(window.innerWidth - popup.width - margin, anchor.left));
+      const top = Math.max(margin, anchor.top - popup.height - 5);
+      measurementMenu.style.left = left + 'px';
+      measurementMenu.style.top = top + 'px';
+    }
+    function toggleMeasurementMenu() {
+      measurementMenu.classList.toggle('open');
+      positionMeasurementMenu();
+    }
+    function selectMeasurementTool(tool) {
+      measurementMenu.classList.remove('open');
+      sendCommand('measurement_tool', tool);
+    }
+    function openMeasurementSettings() {
+      measurementMenu.classList.remove('open');
+      sendCommand('measurement_tool', 'none');
+      openModal('measurement-modal');
     }
 
     function setSyncedValue(element, value) {
@@ -398,6 +456,11 @@
       chartButton.classList.toggle('paused', update.state === 2);
       chartButton.textContent = update.state === 0 ? 'Time Chart' :
         update.state === 1 ? 'Pause Chart' : 'Continue Chart';
+      const tool = update.measurementTool || 'none';
+      measurementToolButton.classList.toggle('active', tool !== 'none');
+      measurementToolButton.textContent = tool === 'point' ? '⊙ Point' :
+        tool === 'line' ? '╱ Line' : tool === 'rectangle' ? '▭ Rectangle' : 'Measurements ▴';
+      thermalOverlay.classList.toggle('measurement-active', tool !== 'none');
 
       const minBound = Number(update.rangeBoundMin);
       const maxBound = Number(update.rangeBoundMax);
@@ -447,10 +510,17 @@
       return sendCommand('chart_trace', id + '\t' + field + '\t' + value);
     }
 
+    function deleteTrace(id) { return sendCommand('chart_trace_delete', id); }
+
     function updateTraceTable(traces) {
       const signature = traces.map(trace => trace.id).join('\n');
       if (traceTableBody.dataset.signature !== signature) {
         traceTableBody.dataset.signature = signature;
+        const activeIds = new Set(traces.map(trace => trace.id));
+        for (const id of Object.keys(data.series)) if (!activeIds.has(id)) {
+          delete data.series[id];
+          delete data.bounds[id];
+        }
         traceTableBody.replaceChildren(...traces.map(trace => {
           const row = document.createElement('tr');
 
@@ -474,11 +544,25 @@
           colorCell.appendChild(color); row.appendChild(colorCell);
 
           const showCell = document.createElement('td');
+          showCell.className = 'trace-actions';
           const show = document.createElement('input');
           show.type = 'checkbox'; show.dataset.field = 'show';
           show.addEventListener('change', () =>
-            sendCommand('measurement', trace.measurement + '=' + show.checked));
-          showCell.appendChild(show); row.appendChild(showCell);
+            sendTraceProperty(trace.id, 'show', show.checked));
+          showCell.appendChild(show);
+          row.appendChild(showCell);
+
+          const deleteCell = document.createElement('td');
+          deleteCell.className = 'trace-actions';
+          if (!trace.measurement) {
+            const remove = document.createElement('button');
+            remove.type = 'button'; remove.className = 'trace-delete';
+            remove.textContent = '🗑'; remove.title = 'Delete recorded trace';
+            remove.setAttribute('aria-label', 'Delete recorded trace ' + trace.name);
+            remove.addEventListener('click', () => deleteTrace(trace.id));
+            deleteCell.appendChild(remove);
+          }
+          row.appendChild(deleteCell);
           row.dataset.trace = trace.id;
           return row;
         }));
@@ -561,17 +645,30 @@
 
     async function pollState() {
       try {
-        const url = '/state?generation=' + data.generation + '&from=' + data.max.length;
+        const url = '/state?generation=' + data.generation + '&from=' + data.count;
         const update = await fetch(url, { cache: 'no-store' }).then(response => response.json());
-        if (update.reset || update.from !== data.max.length) {
-          data.max = [];
-          data.min = [];
-          data.center = [];
+        if (update.reset || update.from !== data.count) {
+          data.series = Object.create(null);
+          data.bounds = Object.create(null);
+          data.count = 0;
         }
         data.generation = update.generation;
-        data.max.push(...update.max);
-        data.min.push(...update.min);
-        data.center.push(...update.center);
+        const updateSeries = update.series || {};
+        for (const trace of (Array.isArray(update.traces) ? update.traces : [])) {
+          if (!data.series[trace.id]) data.series[trace.id] = new Array(data.count).fill(null);
+          if (!data.bounds[trace.id]) data.bounds[trace.id] = { min: Infinity, max: -Infinity };
+          const incoming = Array.isArray(updateSeries[trace.id]) ? updateSeries[trace.id] : [];
+          const missing = Math.max(0, Number(update.count) - data.count);
+          for (let i = 0; i < missing; ++i) {
+            const value = i < incoming.length ? incoming[i] : null;
+            data.series[trace.id].push(value);
+            if (Number.isFinite(value)) {
+              data.bounds[trace.id].min = Math.min(data.bounds[trace.id].min, value);
+              data.bounds[trace.id].max = Math.max(data.bounds[trace.id].max, value);
+            }
+          }
+        }
+        data.count = Number(update.count) || 0;
         meta = update;
         const cameraGeneration = Number(update.cameraGeneration);
         if (!stateOnline || (lastCameraGeneration !== null &&
@@ -644,9 +741,10 @@
       context.fillText(text, x, y);
     }
 
-    function drawTemperaturePoint(context, overlay, width, height, x, y, value, color) {
+    function drawTemperaturePoint(context, overlay, width, height, x, y, value, color,
+        compact = false) {
       const point = mapThermalPoint(x, y, overlay, width, height);
-      const marker = .015 * width;
+      const marker = (compact ? .009 : .015) * width;
       context.lineCap = 'round';
       context.lineWidth = .009 * width;
       context.strokeStyle = '#000';
@@ -658,11 +756,11 @@
       context.strokeStyle = color;
       context.stroke();
 
-      const fontSize = Math.max(15, .0525 * width);
+      const fontSize = compact ? Math.max(5.76, .0189 * width) : Math.max(9, .0315 * width);
       const text = formatTemperature(value, overlay.unit);
       context.font = fontSize + 'px sans-serif';
       context.textBaseline = 'middle';
-      const offset = .045 * width;
+      const offset = (compact ? .0162 : .027) * width;
       const clearance = .005 * width;
       const textWidth = context.measureText(text).width;
       const placeLeft = point.x + offset + textWidth + clearance > width;
@@ -670,7 +768,7 @@
       const textY = Math.max(fontSize / 2 + clearance,
         Math.min(height - fontSize / 2 - clearance, point.y));
       outlinedText(context, text, textX, textY, placeLeft ? 'right' : 'left', color,
-        Math.max(3, .012 * width));
+        Math.max(compact ? 1.08 : 1.8, (compact ? .00432 : .0072) * width));
     }
 
     function drawLock(context, x, y, size) {
@@ -689,7 +787,7 @@
     function drawPaletteScale(context, overlay, width, height) {
       const colors = Array.isArray(meta.paletteColors) ? meta.paletteColors : [];
       const clear = .016 * width;
-      const fontSize = Math.max(15, .0525 * width);
+      const fontSize = Math.max(9, .0315 * width);
       const paletteWidth = Math.max(5, .038 * width);
       const left = width - clear - paletteWidth;
       const right = width - clear;
@@ -715,9 +813,9 @@
       const minText = formatTemperature(meta.rangeMin, overlay.unit);
       const labelX = right;
       outlinedText(context, maxText, labelX, clear + fontSize, 'right', '#fff',
-        Math.max(3, .012 * width));
+        Math.max(1.8, .0072 * width));
       outlinedText(context, minText, labelX, height - clear, 'right', '#fff',
-        Math.max(3, .012 * width));
+        Math.max(1.8, .0072 * width));
       if (meta.rangeLocked) {
         const lockSize = fontSize * .85;
         drawLock(context, labelX - context.measureText(maxText).width - lockSize - 3,
@@ -743,7 +841,66 @@
       if (overlay.showMax)
         drawTemperaturePoint(context, overlay, width, height,
           overlay.maxX, overlay.maxY, overlay.max, '#ff4040');
+      drawMeasurementObjects(context, overlay, width, height);
       if (overlay.showPalette) drawPaletteScale(context, overlay, width, height);
+    }
+
+    function measurementPoint(normalizedX, normalizedY, overlay, width, height) {
+      return mapThermalPoint(normalizedX * Math.max(0, overlay.sensorWidth - 1),
+        normalizedY * Math.max(0, overlay.sensorHeight - 1), overlay, width, height);
+    }
+
+    function drawMeasurementObjects(context, overlay, width, height) {
+      const objects = Array.isArray(meta.measurementObjects) ? meta.measurementObjects : [];
+      context.lineCap = 'round'; context.lineJoin = 'round';
+      for (const object of objects) {
+        const moving = measurementPointer && measurementPointer.moving &&
+          measurementPointer.deleteId === object.id ? measurementPointer : null;
+        const x1 = moving ? moving.x1 : object.x1, y1 = moving ? moving.y1 : object.y1;
+        const x2 = moving ? moving.x2 : object.x2, y2 = moving ? moving.y2 : object.y2;
+        const first = measurementPoint(x1, y1, overlay, width, height);
+        const second = measurementPoint(x2, y2, overlay, width, height);
+        if (object.type !== 'point') {
+          context.beginPath();
+          if (object.type === 'line') {
+            context.moveTo(first.x, first.y); context.lineTo(second.x, second.y);
+          } else {
+            context.rect(Math.min(first.x, second.x), Math.min(first.y, second.y),
+              Math.abs(second.x - first.x), Math.abs(second.y - first.y));
+          }
+          context.strokeStyle = '#000';
+          context.lineWidth = Math.max(1.5, Math.min(8, .0045 * width));
+          context.stroke();
+          context.strokeStyle = '#fff'; context.lineWidth = Math.max(.5, .0015 * width);
+          context.stroke();
+        }
+        for (const metric of (Array.isArray(object.metrics) ? object.metrics : [])) {
+          const trace = traceStyle(metric.trace);
+          if (!trace || !trace.show || !Number.isFinite(Number(metric.value))) continue;
+          const metricX = Number(metric.x) + (moving ?
+            (moving.x1 - object.x1) * Math.max(0, overlay.sensorWidth - 1) : 0);
+          const metricY = Number(metric.y) + (moving ?
+            (moving.y1 - object.y1) * Math.max(0, overlay.sensorHeight - 1) : 0);
+          drawTemperaturePoint(context, overlay, width, height, metricX, metricY,
+            metric.value, trace.color, true);
+        }
+      }
+      if (measurementPointer && !measurementPointer.deleteId &&
+          measurementPointer.type !== 'point') {
+        const first = measurementPoint(measurementPointer.x1, measurementPointer.y1,
+          overlay, width, height);
+        const second = measurementPoint(measurementPointer.x2, measurementPointer.y2,
+          overlay, width, height);
+        context.beginPath();
+        if (measurementPointer.type === 'line') {
+          context.moveTo(first.x, first.y); context.lineTo(second.x, second.y);
+        } else {
+          context.rect(Math.min(first.x, second.x), Math.min(first.y, second.y),
+            Math.abs(second.x - first.x), Math.abs(second.y - first.y));
+        }
+        context.strokeStyle = '#fff'; context.lineWidth = Math.max(.5, .0015 * width);
+        context.stroke();
+      }
     }
 
     function drawThermalOverlay() {
@@ -775,6 +932,148 @@
       drawThermalGraphics(context, width, height);
     }
 
+    function canvasSensorPoint(event) {
+      const bounds = thermalOverlay.getBoundingClientRect();
+      const overlay = meta.overlay;
+      if (!overlay || bounds.width <= 0 || bounds.height <= 0) return null;
+      let x = (event.clientX - bounds.left) / bounds.width;
+      let y = (event.clientY - bounds.top) / bounds.height;
+      const scale = Math.max(1, Number(overlay.scale) || 1);
+      x = (x + (scale - 1) / 2) / scale;
+      y = (y + (scale - 1) / 2) / scale;
+      if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+      if (overlay.mirror) x = 1 - x;
+      if (overlay.rotate) { x = 1 - x; y = 1 - y; }
+      if (overlay.rotate90) { const rotatedX = x; x = y; y = 1 - rotatedX; }
+      return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+    }
+
+    function pointSegmentDistanceSquared(px, py, ax, ay, bx, by) {
+      const dx = bx - ax, dy = by - ay;
+      const length = dx * dx + dy * dy;
+      const t = Math.max(0, Math.min(1, length === 0 ? 0 :
+        ((px - ax) * dx + (py - ay) * dy) / length));
+      const ox = px - (ax + t * dx), oy = py - (ay + t * dy);
+      return ox * ox + oy * oy;
+    }
+
+    function measurementHit(x, y) {
+      const objects = Array.isArray(meta.measurementObjects) ? meta.measurementObjects : [];
+      const overlay = meta.overlay;
+      const bounds = thermalOverlay.getBoundingClientRect();
+      const tolerance = 18;
+      for (let i = objects.length - 1; i >= 0; --i) {
+        const object = objects[i];
+        const first = measurementPoint(object.x1, object.y1, overlay, bounds.width, bounds.height);
+        const second = measurementPoint(object.x2, object.y2, overlay, bounds.width, bounds.height);
+        if (object.type === 'point') {
+          const dx = x - first.x, dy = y - first.y;
+          if (dx * dx + dy * dy <= tolerance * tolerance) return object.id;
+        } else if (object.type === 'line') {
+          if (pointSegmentDistanceSquared(x, y, first.x, first.y, second.x, second.y) <=
+              tolerance * tolerance) return object.id;
+        } else if (x >= Math.min(first.x, second.x) - tolerance &&
+            x <= Math.max(first.x, second.x) + tolerance &&
+            y >= Math.min(first.y, second.y) - tolerance &&
+            y <= Math.max(first.y, second.y) + tolerance) return object.id;
+      }
+      return null;
+    }
+
+    thermalOverlay.addEventListener('pointerdown', event => {
+      const bounds = thermalOverlay.getBoundingClientRect();
+      const localX = event.clientX - bounds.left, localY = event.clientY - bounds.top;
+      const deleteId = measurementHit(localX, localY);
+      const point = canvasSensorPoint(event);
+      const type = meta.measurementTool || 'none';
+      if (!deleteId && (type === 'none' || !point)) return;
+      const existing = deleteId && Array.isArray(meta.measurementObjects) ?
+        meta.measurementObjects.find(object => object.id === deleteId) : null;
+      measurementPointer = existing && point ? {
+        pointerId: event.pointerId, deleteId, type: existing.type, moving: false,
+        startClientX: event.clientX, startClientY: event.clientY,
+        startSensorX: point.x, startSensorY: point.y,
+        originalX1: existing.x1, originalY1: existing.y1,
+        originalX2: existing.x2, originalY2: existing.y2,
+        x1: existing.x1, y1: existing.y1, x2: existing.x2, y2: existing.y2
+      } : deleteId ? { pointerId: event.pointerId, deleteId, moving: false } :
+        { pointerId: event.pointerId, type, x1: point.x, y1: point.y, x2: point.x, y2: point.y };
+      thermalOverlay.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      requestDraw();
+    });
+
+    thermalOverlay.addEventListener('pointermove', event => {
+      if (!measurementPointer || measurementPointer.pointerId !== event.pointerId) return;
+      if (measurementPointer.deleteId) {
+        const dx = event.clientX - measurementPointer.startClientX;
+        const dy = event.clientY - measurementPointer.startClientY;
+        if (!measurementPointer.moving && dx * dx + dy * dy > 64)
+          measurementPointer.moving = true;
+        const point = canvasSensorPoint(event);
+        if (measurementPointer.moving && point) {
+          translateMeasurementPointer(measurementPointer, point);
+          requestDraw();
+        }
+        event.preventDefault();
+        return;
+      }
+      const point = canvasSensorPoint(event);
+      if (point) { measurementPointer.x2 = point.x; measurementPointer.y2 = point.y; requestDraw(); }
+      event.preventDefault();
+    });
+
+    function translateMeasurementPointer(operation, point) {
+      let dx = point.x - operation.startSensorX;
+      let dy = point.y - operation.startSensorY;
+      dx = Math.max(-Math.min(operation.originalX1, operation.originalX2),
+        Math.min(1 - Math.max(operation.originalX1, operation.originalX2), dx));
+      dy = Math.max(-Math.min(operation.originalY1, operation.originalY2),
+        Math.min(1 - Math.max(operation.originalY1, operation.originalY2), dy));
+      operation.x1 = operation.originalX1 + dx;
+      operation.y1 = operation.originalY1 + dy;
+      operation.x2 = operation.originalX2 + dx;
+      operation.y2 = operation.originalY2 + dy;
+    }
+
+    function finishMeasurementPointer(event, cancelled) {
+      if (!measurementPointer || measurementPointer.pointerId !== event.pointerId) return;
+      const operation = measurementPointer;
+      measurementPointer = null;
+      if (!cancelled) {
+        if (operation.deleteId && operation.moving) {
+          const point = canvasSensorPoint(event);
+          if (point) translateMeasurementPointer(operation, point);
+          const existing = Array.isArray(meta.measurementObjects) ?
+            meta.measurementObjects.find(object => object.id === operation.deleteId) : null;
+          if (existing) {
+            const deltaX = (operation.x1 - existing.x1) *
+              Math.max(0, (Number(meta.overlay && meta.overlay.sensorWidth) || 1) - 1);
+            const deltaY = (operation.y1 - existing.y1) *
+              Math.max(0, (Number(meta.overlay && meta.overlay.sensorHeight) || 1) - 1);
+            for (const metric of (Array.isArray(existing.metrics) ? existing.metrics : [])) {
+              metric.x = Number(metric.x) + deltaX;
+              metric.y = Number(metric.y) + deltaY;
+            }
+            existing.x1 = operation.x1; existing.y1 = operation.y1;
+            existing.x2 = operation.x2; existing.y2 = operation.y2;
+          }
+          sendCommand('measurement_move', [operation.deleteId, operation.x1, operation.y1,
+            operation.x2, operation.y2].join(','));
+        } else if (operation.deleteId) sendCommand('measurement_delete', operation.deleteId);
+        else {
+          const point = canvasSensorPoint(event);
+          if (point) { operation.x2 = point.x; operation.y2 = point.y; }
+          sendCommand('measurement_add', [operation.type, operation.x1, operation.y1,
+            operation.x2, operation.y2].join(','));
+        }
+      }
+      event.preventDefault();
+      requestDraw();
+    }
+    thermalOverlay.addEventListener('pointerup', event => finishMeasurementPointer(event, false));
+    thermalOverlay.addEventListener('pointercancel', event => finishMeasurementPointer(event, true));
+
     function niceStep(raw) {
       const power = Math.pow(10, Math.floor(Math.log10(raw)));
       const normalized = raw / power;
@@ -802,7 +1101,7 @@
       else if (duration <= 21600e9) step = 3600e9;
       else if (duration <= 43200e9) step = 7200e9;
       else step = 21600e9;
-      for (const multiplier of [1, 2, 5, 10]) {
+      for (const multiplier of timeStepMultipliers) {
         const candidate = step * multiplier;
         const pixelStep = candidate / Math.max(1, duration) * plotWidth;
         let labelWidth = 0;
@@ -817,14 +1116,46 @@
         lineWidth = 2) {
       if (!enabled || values.length === 0) return;
       context.beginPath();
-      let started = false;
-      for (let i = 0; i < values.length; ++i) {
-        const value = values[i];
-        if (!Number.isFinite(value)) { started = false; continue; }
-        const x = left + i / Math.max(1, values.length - 1) * (right - left);
-        const y = bottom - (value - lo) / (hi - lo) * (bottom - top);
-        if (!started) { context.moveTo(x, y); started = true; }
-        else context.lineTo(x, y);
+      const columns = Math.max(1, Math.round(right - left));
+      const yScale = (bottom - top) / (hi - lo);
+      if (values.length <= columns * 2) {
+        let started = false;
+        for (let i = 0; i < values.length; ++i) {
+          const value = values[i];
+          if (!Number.isFinite(value)) { started = false; continue; }
+          const x = left + i / Math.max(1, values.length - 1) * (right - left);
+          const y = bottom - (value - lo) * yScale;
+          if (!started) { context.moveTo(x, y); started = true; }
+          else context.lineTo(x, y);
+        }
+      } else {
+        // Compress samples which map to one display column, preserving its first/last
+        // values and extrema. This is the same principle used by ngspice line compression.
+        let started = false, column = -1;
+        let firstY = 0, lastY = 0, minY = 0, maxY = 0;
+        for (let i = 0; i <= values.length; ++i) {
+          const finite = i < values.length && Number.isFinite(values[i]);
+          const nextColumn = finite ? Math.floor(i * (columns - 1) /
+            Math.max(1, values.length - 1)) : -1;
+          if (column >= 0 && (!finite || nextColumn !== column)) {
+            const x = left + column;
+            if (!started) context.moveTo(x, firstY); else context.lineTo(x, firstY);
+            if (minY !== firstY) context.lineTo(x, minY);
+            if (maxY !== minY) context.lineTo(x, maxY);
+            if (lastY !== maxY) context.lineTo(x, lastY);
+            started = true;
+            column = -1;
+          }
+          if (!finite) { started = false; continue; }
+          const y = bottom - (values[i] - lo) * yScale;
+          if (column < 0) {
+            column = nextColumn;
+            firstY = lastY = minY = maxY = y;
+          } else {
+            lastY = y;
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+          }
+        }
       }
       context.strokeStyle = color;
       context.lineWidth = lineWidth;
@@ -863,7 +1194,7 @@
       const fontSize = 22.5;
       context.font = fontSize + 'px sans-serif';
       context.textBaseline = 'alphabetic';
-      if (data.max.length === 0) {
+      if (data.count === 0) {
         if (showPausedOverlay && meta.state === 2) drawPausedChartOverlay(context, width, height);
         return;
       }
@@ -872,14 +1203,10 @@
       const right = width - Math.max(22, context.measureText('0').width + 10);
       const units = ['°C', '°F', 'K', '°R'];
       const suffix = ' [' + (units[meta.unit] || '°C') + ']';
-      const maxTrace = traceStyle('max');
-      const minTrace = traceStyle('min');
-      const centerTrace = traceStyle('center');
+      const traces = Array.isArray(meta.traces) ? meta.traces : defaultTraces;
       const legendEntries = [];
-      if (maxTrace.show) legendEntries.push({ color: maxTrace.color, text: maxTrace.name + suffix });
-      if (minTrace.show) legendEntries.push({ color: minTrace.color, text: minTrace.name + suffix });
-      if (centerTrace.show)
-        legendEntries.push({ color: centerTrace.color, text: centerTrace.name + suffix });
+      for (const trace of traces) if (trace.show)
+        legendEntries.push({ color: trace.color, text: trace.name + suffix });
       const legendGap = 12;
       const legendLineHeight = fontSize * 1.2;
       let legendRows = 1, legendCursor = left;
@@ -897,15 +1224,13 @@
       if (right <= left + 10 || bottom <= top + 10) return;
 
       let lo = Infinity, hi = -Infinity;
-      const include = (values, enabled) => {
-        if (!enabled) return;
-        for (const value of values) if (Number.isFinite(value)) {
-          lo = Math.min(lo, value); hi = Math.max(hi, value);
+      for (const trace of traces) if (trace.show) {
+        const bounds = data.bounds[trace.id];
+        if (bounds) {
+          lo = Math.min(lo, bounds.min);
+          hi = Math.max(hi, bounds.max);
         }
-      };
-      include(data.max, maxTrace.show);
-      include(data.min, minTrace.show);
-      include(data.center, centerTrace.show);
+      }
       if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
       if (hi - lo < .5) { hi += .25; lo -= .25; }
       const yDivisions = Math.max(2, Math.min(8,
@@ -917,49 +1242,56 @@
 
       context.lineWidth = 1;
       context.strokeStyle = '#eee';
+      context.beginPath();
       for (let major = 0; major <= majorCount; ++major) {
         const majorValue = lo + major * step;
         for (let sub = 1; sub < 5; ++sub) {
           const value = majorValue + sub * step / 5;
           if (value >= hi) continue;
           const y = bottom - (value - lo) / (hi - lo) * (bottom - top);
-          context.beginPath(); context.moveTo(left, y); context.lineTo(right, y); context.stroke();
+          context.moveTo(left, y); context.lineTo(right, y);
         }
       }
+      context.stroke();
 
       context.lineWidth = 2;
       context.strokeStyle = '#ccc';
       context.fillStyle = '#000';
       context.textAlign = 'right';
+      context.beginPath();
       for (let major = 0; major <= majorCount; ++major) {
         const value = lo + major * step;
         if (value > hi + step * .1) continue;
         const y = bottom - (value - lo) / (hi - lo) * (bottom - top);
-        context.beginPath(); context.moveTo(left, y); context.lineTo(right, y); context.stroke();
+        context.moveTo(left, y); context.lineTo(right, y);
         context.fillText(value.toFixed(1), left - 5, y + 4);
       }
+      context.stroke();
 
-      const duration = Math.max(meta.intervalNs, data.max.length * meta.intervalNs);
+      const duration = Math.max(meta.intervalNs, data.count * meta.intervalNs);
       const xStep = timeStep(duration, right - left, context);
       context.lineWidth = 1;
       context.strokeStyle = '#eee';
+      context.beginPath();
       for (let time = 0; time <= duration; time += xStep) {
         for (let sub = 1; sub < 5; ++sub) {
           const minor = time + xStep * sub / 5;
           if (minor >= duration) continue;
           const x = left + minor / duration * (right - left);
-          context.beginPath(); context.moveTo(x, top); context.lineTo(x, bottom); context.stroke();
+          context.moveTo(x, top); context.lineTo(x, bottom);
         }
       }
+      context.stroke();
 
       context.lineWidth = 2;
       context.strokeStyle = '#ccc';
       context.fillStyle = '#000';
       context.textAlign = 'center';
       let previousRight = -Infinity;
+      context.beginPath();
       for (let time = 0; time <= duration; time += xStep) {
         const x = left + time / duration * (right - left);
-        context.beginPath(); context.moveTo(x, top); context.lineTo(x, bottom); context.stroke();
+        context.moveTo(x, top); context.lineTo(x, bottom);
         const label = formatDuration(time, duration);
         const halfWidth = context.measureText(label).width / 2;
         if (x - halfWidth >= previousRight + 4 || time === 0) {
@@ -967,13 +1299,11 @@
           previousRight = x + halfWidth;
         }
       }
+      context.stroke();
 
-      drawSeries(context, data.max, maxTrace.show, maxTrace.color,
-        lo, hi, left, right, top, bottom, Number(maxTrace.lineWidth) || 2);
-      drawSeries(context, data.min, minTrace.show, minTrace.color,
-        lo, hi, left, right, top, bottom, Number(minTrace.lineWidth) || 2);
-      drawSeries(context, data.center, centerTrace.show, centerTrace.color,
-        lo, hi, left, right, top, bottom, Number(centerTrace.lineWidth) || 2);
+      for (const trace of traces)
+        drawSeries(context, data.series[trace.id] || [], trace.show, trace.color,
+          lo, hi, left, right, top, bottom, Number(trace.lineWidth) || 2);
 
       context.lineWidth = 5;
       context.strokeStyle = '#444';
@@ -1105,7 +1435,7 @@
 
     async function savePicture() {
       try {
-        const chartActive = meta.state !== 0 && data.max.length > 0;
+        const chartActive = meta.state !== 0 && data.count > 0;
         const camera = cameraCanvas(chartActive && !meta.exportSeparately);
         const exportedChart = chartActive ? exportChartCanvas(camera.width, camera.height,
           meta.exportSeparately) : null;
@@ -1247,8 +1577,11 @@
     live.addEventListener('error', () => restartLiveStream(1000));
     window.addEventListener('resize', () => {
         updateViewerSize();
+        positionMeasurementMenu();
         requestDraw();
     });
+    document.getElementById('controls-scroll').addEventListener('scroll',
+      positionMeasurementMenu, { passive: true });
 
     if ('ResizeObserver' in window) {
       const observer = new ResizeObserver(requestDraw);
