@@ -3,7 +3,8 @@
  *
  * Wi-Fi side: local SoftAP used by the Android phone.
  * USB side: CDC-NCM Ethernet with a fixed address and DHCP for the PC.
- * Data path: transparent TCP forwarding only; image/video data is never decoded.
+ * Data path: HTTPS termination followed by TCP forwarding to the phone;
+ * image/video data is never decoded or re-encoded.
  */
 
 #include <errno.h>
@@ -21,6 +22,8 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_tls.h"
+#include "esp_tls_errors.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 
@@ -38,7 +41,7 @@
 #define BRIDGE_WIFI_SSID       "InfiCamBridge"
 #define BRIDGE_WIFI_PASSWORD   "5KfHSF21"
 #define REGISTRATION_PORT      7777
-#define PUBLIC_HTTP_PORT       80
+#define PUBLIC_HTTPS_PORT      443
 #define MAX_PROXY_CONNECTIONS  8
 #define PROXY_BUFFER_SIZE      8192
 
@@ -53,9 +56,15 @@
 #define USB_IP_D 1
 
 static const char *TAG = "inficam_bridge";
+extern const unsigned char server_cert_pem_start[] asm("_binary_server_cert_pem_start");
+extern const unsigned char server_cert_pem_end[] asm("_binary_server_cert_pem_end");
+extern const unsigned char server_key_pem_start[] asm("_binary_server_key_pem_start");
+extern const unsigned char server_key_pem_end[] asm("_binary_server_key_pem_end");
+
 static esp_netif_t *s_usb_netif;
 static SemaphoreHandle_t s_registration_lock;
 static SemaphoreHandle_t s_proxy_slots;
+static esp_tls_cfg_server_t s_tls_config;
 static uint32_t s_phone_address;
 static uint16_t s_phone_port;
 static uint32_t s_registration_generation;
@@ -169,7 +178,7 @@ static void registration_task(void *argument)
     char address[INET_ADDRSTRLEN];
     inet_ntoa_r(peer.sin_addr, address, sizeof(address));
     ESP_LOGI(TAG, "InfiCam registered at %s:%u", address, web_port);
-    static const char ok_response[] = "OK http://192.168.7.1/\n";
+    static const char ok_response[] = "OK https://192.168.7.1/\n";
     if (send_all(socket_fd, ok_response, sizeof(ok_response) - 1) != 0) {
         goto done;
     }
@@ -266,7 +275,37 @@ static bool registration_is_current(uint32_t generation)
     return current;
 }
 
-static void send_unavailable(int client)
+static int tls_send_all(esp_tls_t *tls, int socket_fd,
+                        const void *data, size_t length)
+{
+    const uint8_t *cursor = data;
+    while (length != 0) {
+        const ssize_t sent = esp_tls_conn_write(tls, cursor, length);
+        if (sent > 0) {
+            cursor += sent;
+            length -= (size_t)sent;
+            continue;
+        }
+        if (sent != ESP_TLS_ERR_SSL_WANT_READ &&
+            sent != ESP_TLS_ERR_SSL_WANT_WRITE) {
+            return -1;
+        }
+
+        fd_set wait_set;
+        FD_ZERO(&wait_set);
+        FD_SET(socket_fd, &wait_set);
+        struct timeval timeout = { .tv_sec = 5, .tv_usec = 0 };
+        const int ready = sent == ESP_TLS_ERR_SSL_WANT_READ
+            ? select(socket_fd + 1, &wait_set, NULL, NULL, &timeout)
+            : select(socket_fd + 1, NULL, &wait_set, NULL, &timeout);
+        if (ready <= 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void send_unavailable(esp_tls_t *tls, int client)
 {
     static const char response[] =
         "HTTP/1.1 503 Service Unavailable\r\n"
@@ -277,51 +316,47 @@ static void send_unavailable(int client)
     /* Consume the already-sent HTTP request before closing. Closing a TCP socket with unread
      * receive data produces an RST on Linux, which makes browsers/curl discard a valid 503. */
     const struct timeval receive_timeout = { .tv_sec = 0, .tv_usec = 250000 };
-    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
-    char request[1024];
-    (void)recv(client, request, sizeof(request), 0);
-    send_all(client, response, sizeof(response) - 1);
-}
-
-static void close_gracefully(int socket_fd)
-{
-    if (socket_fd < 0) {
-        return;
-    }
-    /* Let the peer observe the complete HTTP response/stream before releasing the PCB. */
-    shutdown(socket_fd, SHUT_WR);
-    const struct timeval receive_timeout = { .tv_sec = 0, .tv_usec = 250000 };
-    setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO,
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
                &receive_timeout, sizeof(receive_timeout));
-    uint8_t discard[128];
-    while (recv(socket_fd, discard, sizeof(discard), 0) > 0) {
-    }
-    close(socket_fd);
+    char request[1024];
+    (void)esp_tls_conn_read(tls, request, sizeof(request));
+    (void)tls_send_all(tls, client, response, sizeof(response) - 1);
 }
 
 static void proxy_connection_task(void *argument)
 {
     const int client = (int)(intptr_t)argument;
     int phone = -1;
+    esp_tls_t *tls = NULL;
     uint8_t *buffer = NULL;
     struct sockaddr_in target;
     uint32_t generation;
 
     configure_socket(client);
+    const struct timeval handshake_timeout = { .tv_sec = 10, .tv_usec = 0 };
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
+               &handshake_timeout, sizeof(handshake_timeout));
+    tls = esp_tls_init();
+    if (tls == NULL ||
+        esp_tls_server_session_create(&s_tls_config, client, tls) != ESP_OK) {
+        ESP_LOGW(TAG, "TLS handshake failed");
+        goto done;
+    }
+
     if (!get_registered_phone(&target, &generation)) {
-        send_unavailable(client);
+        send_unavailable(tls, client);
         goto done;
     }
 
     phone = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     if (phone < 0) {
-        send_unavailable(client);
+        send_unavailable(tls, client);
         goto done;
     }
     configure_socket(phone);
     if (connect(phone, (struct sockaddr *)&target, sizeof(target)) != 0) {
         ESP_LOGW(TAG, "Cannot connect to registered phone: errno %d", errno);
-        send_unavailable(client);
+        send_unavailable(tls, client);
         goto done;
     }
 
@@ -331,12 +366,15 @@ static void proxy_connection_task(void *argument)
     }
 
     for (;;) {
+        const bool tls_data_pending = esp_tls_get_bytes_avail(tls) > 0;
         fd_set read_set;
         FD_ZERO(&read_set);
         FD_SET(client, &read_set);
         FD_SET(phone, &read_set);
         const int maximum = client > phone ? client : phone;
-        struct timeval timeout = { .tv_sec = 1, .tv_usec = 0 };
+        struct timeval timeout = tls_data_pending
+            ? (struct timeval){ .tv_sec = 0, .tv_usec = 0 }
+            : (struct timeval){ .tv_sec = 1, .tv_usec = 0 };
         int ready = select(maximum + 1, &read_set, NULL, NULL, &timeout);
         if (ready < 0) {
             if (errno == EINTR) {
@@ -347,20 +385,26 @@ static void proxy_connection_task(void *argument)
         if (!registration_is_current(generation)) {
             break;
         }
-        if (ready == 0) {
+        if (ready == 0 && !tls_data_pending) {
             continue;
         }
-        if (FD_ISSET(client, &read_set)) {
-            const ssize_t length = recv(client, buffer, PROXY_BUFFER_SIZE, 0);
-            if (length <= 0 || send_all(phone, buffer, (size_t)length) != 0) {
-                break;
+        bool failed = false;
+        if (tls_data_pending || FD_ISSET(client, &read_set)) {
+            const ssize_t length = esp_tls_conn_read(tls, buffer, PROXY_BUFFER_SIZE);
+            if (length > 0) {
+                failed = send_all(phone, buffer, (size_t)length) != 0;
+            } else if (length != ESP_TLS_ERR_SSL_WANT_READ &&
+                       length != ESP_TLS_ERR_SSL_WANT_WRITE) {
+                failed = true;
             }
         }
-        if (FD_ISSET(phone, &read_set)) {
+        if (!failed && FD_ISSET(phone, &read_set)) {
             const ssize_t length = recv(phone, buffer, PROXY_BUFFER_SIZE, 0);
-            if (length <= 0 || send_all(client, buffer, (size_t)length) != 0) {
-                break;
-            }
+            failed = length <= 0 ||
+                     tls_send_all(tls, client, buffer, (size_t)length) != 0;
+        }
+        if (failed) {
+            break;
         }
     }
 
@@ -370,7 +414,11 @@ done:
         shutdown(phone, SHUT_RDWR);
         close(phone);
     }
-    close_gracefully(client);
+    if (tls != NULL) {
+        esp_tls_server_session_delete(tls);
+    }
+    shutdown(client, SHUT_RDWR);
+    close(client);
     xSemaphoreGive(s_proxy_slots);
     vTaskDelete(NULL);
 }
@@ -388,17 +436,17 @@ static void proxy_listener_task(void *argument)
         setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
         struct sockaddr_in address = {
             .sin_family = AF_INET,
-            .sin_port = htons(PUBLIC_HTTP_PORT),
+            .sin_port = htons(PUBLIC_HTTPS_PORT),
         };
         IP4_ADDR((ip4_addr_t *)&address.sin_addr, USB_IP_A, USB_IP_B, USB_IP_C, USB_IP_D);
         if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
             listen(listener, MAX_PROXY_CONNECTIONS) != 0) {
-            ESP_LOGE(TAG, "HTTP proxy listener failed: errno %d", errno);
+            ESP_LOGE(TAG, "HTTPS proxy listener failed: errno %d", errno);
             close(listener);
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
-        ESP_LOGI(TAG, "Web Control proxy available at http://192.168.7.1");
+        ESP_LOGI(TAG, "Web Control proxy available at https://192.168.7.1");
         for (;;) {
             int client = accept(listener, NULL, NULL);
             if (client < 0) {
@@ -408,11 +456,13 @@ static void proxy_listener_task(void *argument)
                 break;
             }
             if (xSemaphoreTake(s_proxy_slots, 0) != pdTRUE) {
-                send_unavailable(client);
+                /* A TLS response requires a per-client handshake and task. Reject overload
+                 * immediately instead of blocking the listener for every other browser. */
+                shutdown(client, SHUT_RDWR);
                 close(client);
                 continue;
             }
-            if (xTaskCreate(proxy_connection_task, "tcp_proxy", 5120,
+            if (xTaskCreate(proxy_connection_task, "tls_proxy", 8192,
                             (void *)(intptr_t)client, 4, NULL) != pdPASS) {
                 close(client);
                 xSemaphoreGive(s_proxy_slots);
@@ -576,6 +626,23 @@ void app_main(void)
     ESP_ERROR_CHECK(status);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    s_tls_config = (esp_tls_cfg_server_t) {
+        .servercert_buf = server_cert_pem_start,
+        .servercert_bytes = (unsigned int)(server_cert_pem_end -
+                                          server_cert_pem_start),
+        .serverkey_buf = server_key_pem_start,
+        .serverkey_bytes = (unsigned int)(server_key_pem_end -
+                                         server_key_pem_start),
+        .tls_handshake_timeout_ms = 10000,
+        .tls_version = ESP_TLS_VER_TLS_1_2,
+    };
+    status = esp_tls_cfg_server_session_tickets_init(&s_tls_config);
+    if (status == ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW(TAG, "TLS session tickets unavailable: %s", esp_err_to_name(status));
+    } else {
+        ESP_ERROR_CHECK(status);
+    }
 
     s_registration_lock = xSemaphoreCreateMutex();
     s_proxy_slots = xSemaphoreCreateCounting(MAX_PROXY_CONNECTIONS,

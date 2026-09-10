@@ -23,6 +23,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import javax.net.ssl.SSLServerSocket;
+import javax.net.ssl.SSLServerSocketFactory;
+
 /** A small dependency-free MJPEG server for the current thermal view. */
 public final class WebViewServer {
 	public interface CommandHandler {
@@ -51,14 +54,19 @@ public final class WebViewServer {
 	private final Object encoderLock = new Object();
 	private final Set<Socket> clients = Collections.newSetFromMap(
 			new ConcurrentHashMap<Socket, Boolean>());
+	private final Set<Socket> bridgeClients = Collections.newSetFromMap(
+			new ConcurrentHashMap<Socket, Boolean>());
 	private final AtomicInteger streamClients = new AtomicInteger();
 	private final byte[] indexPage;
 	private volatile byte[] latestJpeg;
 	private volatile long frameNumber;
 	private volatile boolean running;
 	private volatile ServerSocket serverSocket;
+	private volatile ServerSocket bridgeServerSocket;
 	private volatile int port;
+	private volatile int bridgePort;
 	private Thread acceptThread;
+	private Thread bridgeAcceptThread;
 	private Thread encoderThread;
 	private Bitmap pendingFrame;
 	private Bitmap reusableFrame;
@@ -93,10 +101,15 @@ public final class WebViewServer {
 			return getUrl();
 		if (!allowNoLocalAddress && getLocalIp() == null)
 			throw new IOException("No local network address");
+		SSLServerSocketFactory socketFactory =
+				WebViewTlsIdentity.createContext().getServerSocketFactory();
 		IOException lastError = null;
 		for (int candidate = FIRST_PORT; candidate <= LAST_PORT; ++candidate) {
 			try {
-				serverSocket = new ServerSocket(candidate, 8, InetAddress.getByName("0.0.0.0"));
+				SSLServerSocket secureSocket = (SSLServerSocket) socketFactory.createServerSocket(
+						candidate, 8, InetAddress.getByName("0.0.0.0"));
+				WebViewTlsIdentity.configure(secureSocket);
+				serverSocket = secureSocket;
 				port = candidate;
 				break;
 			} catch (IOException e) {
@@ -105,14 +118,28 @@ public final class WebViewServer {
 		}
 		if (serverSocket == null)
 			throw lastError == null ? new IOException("Unable to bind web server") : lastError;
+		if (allowNoLocalAddress) {
+			try {
+				openBridgeListener();
+			} catch (IOException e) {
+				try { serverSocket.close(); } catch (IOException ignored) { }
+				serverSocket = null;
+				port = 0;
+				throw e;
+			}
+		}
 		running = true;
 		encoderRunning = true;
 		encoderThread = new Thread(this::encodeLoop, "InfiCam web encoder");
 		encoderThread.setDaemon(true);
 		encoderThread.start();
-		acceptThread = new Thread(this::acceptLoop, "InfiCam web server");
+		ServerSocket secureListener = serverSocket;
+		acceptThread = new Thread(() -> acceptLoop(secureListener, false),
+				"InfiCam HTTPS server");
 		acceptThread.setDaemon(true);
 		acceptThread.start();
+		if (bridgeServerSocket != null)
+			startBridgeAcceptThread();
 		return getUrl();
 	}
 
@@ -135,10 +162,18 @@ public final class WebViewServer {
 		if (ss != null) {
 			try { ss.close(); } catch (IOException ignored) { }
 		}
-		for (Socket socket : clients) {
-			try { socket.close(); } catch (IOException ignored) { }
+		ServerSocket bridge = bridgeServerSocket;
+		bridgeServerSocket = null;
+		bridgePort = 0;
+		if (bridge != null) {
+			try { bridge.close(); } catch (IOException ignored) { }
 		}
-		clients.clear();
+		/* SSLSocket.close() sends a TLS close_notify and is therefore a network
+		 * operation. stop() is normally called by the Web Control button on the UI
+		 * thread, where Android deliberately throws NetworkOnMainThreadException.
+		 * Detach this session's sockets synchronously, then close them in the
+		 * background. */
+		detachAndCloseClientsAsync(clients);
 		synchronized (frameLock) {
 			frameLock.notifyAll();
 		}
@@ -156,6 +191,28 @@ public final class WebViewServer {
 
 	public int getPort() { return running ? port : 0; }
 
+	/** Plain HTTP is exposed only to the ESP AP gateway; browser-facing traffic stays HTTPS. */
+	public synchronized int setBridgeEnabled(boolean enabled) throws IOException {
+		if (!running)
+			return 0;
+		if (enabled) {
+			if (bridgeServerSocket == null) {
+				openBridgeListener();
+				startBridgeAcceptThread();
+			}
+			return bridgePort;
+		}
+		ServerSocket listener = bridgeServerSocket;
+		bridgeServerSocket = null;
+		bridgePort = 0;
+		if (listener != null)
+			try { listener.close(); } catch (IOException ignored) { }
+		detachAndCloseClientsAsync(bridgeClients);
+		return 0;
+	}
+
+	public int getBridgePort() { return running ? bridgePort : 0; }
+
 	/** Drop a stale camera image while preserving connected browser sessions. */
 	public void resetFrames() {
 		synchronized (frameLock) {
@@ -167,7 +224,7 @@ public final class WebViewServer {
 
 	public String getUrl() {
 		String ip = getLocalIp();
-		return "http://" + (ip == null ? "127.0.0.1" : ip) + ":" + port;
+		return "https://" + (ip == null ? "127.0.0.1" : ip) + ":" + port;
 	}
 
 	/** True only when a browser is watching and the encoder can accept a new frame. */
@@ -255,53 +312,142 @@ public final class WebViewServer {
 		}
 	}
 
-	private void acceptLoop() {
-		while (running) {
+	private void openBridgeListener() throws IOException {
+		ServerSocket listener = new ServerSocket(0, 8, InetAddress.getByName("0.0.0.0"));
+		bridgeServerSocket = listener;
+		bridgePort = listener.getLocalPort();
+	}
+
+	private void startBridgeAcceptThread() {
+		ServerSocket listener = bridgeServerSocket;
+		if (listener == null)
+			return;
+		bridgeAcceptThread = new Thread(() -> acceptLoop(listener, true),
+				"InfiCam ESP backend");
+		bridgeAcceptThread.setDaemon(true);
+		bridgeAcceptThread.start();
+	}
+
+	private void acceptLoop(ServerSocket listener, boolean bridge) {
+		while (isCurrentListener(listener, bridge)) {
 			try {
-				Socket socket = serverSocket.accept();
+				Socket socket = listener.accept();
+				/* A previous accept thread can wake while stop/start is replacing its
+				 * listener. Never attach that stale connection to the new session. */
+				if (!isCurrentListener(listener, bridge)) {
+					try { socket.close(); } catch (IOException ignored) { }
+					break;
+				}
+				if (bridge && !isEspBridgePeer(socket)) {
+					/* The backend is intentionally HTTP to avoid nested TLS on the ESP link,
+					 * but it is never available to ordinary LAN peers. */
+					try { socket.close(); } catch (IOException ignored) { }
+					continue;
+				}
 				clients.add(socket);
+				if (bridge)
+					bridgeClients.add(socket);
 				Thread client = new Thread(() -> serve(socket), "InfiCam web client");
 				client.setDaemon(true);
 				client.start();
 			} catch (IOException e) {
-				if (running)
+				if (running && !listener.isClosed())
 					continue;
 				break;
 			}
 		}
 	}
 
+	private boolean isCurrentListener(ServerSocket listener, boolean bridge) {
+		return running && !listener.isClosed() &&
+				listener == (bridge ? bridgeServerSocket : serverSocket);
+	}
+
+	/** Removes sockets from the active session before asynchronously closing them. */
+	private void detachAndCloseClientsAsync(Set<Socket> sockets) {
+		Socket[] stale = sockets.toArray(new Socket[0]);
+		if (stale.length == 0)
+			return;
+		for (Socket socket : stale) {
+			clients.remove(socket);
+			bridgeClients.remove(socket);
+		}
+		Thread closer = new Thread(() -> {
+			for (Socket socket : stale) {
+				try { socket.close(); }
+				catch (IOException | RuntimeException ignored) { }
+			}
+		}, "InfiCam web connection closer");
+		closer.setDaemon(true);
+		closer.start();
+	}
+
 	private void serve(Socket socket) {
 		try {
-			socket.setSoTimeout(3000);
+			socket.setSoTimeout(15000);
+			socket.setTcpNoDelay(true);
 			BufferedReader reader = new BufferedReader(new InputStreamReader(
 					socket.getInputStream(), StandardCharsets.US_ASCII));
-			String request = reader.readLine();
-			if (request == null)
-				return;
-			String[] parts = request.split(" ");
-			boolean headOnly = parts.length > 0 && "HEAD".equals(parts[0]);
-			String path = parts.length > 1 ? parts[1] : "/";
-			String header;
-			while ((header = reader.readLine()) != null && !header.isEmpty()) { /* headers */ }
-			if (path.startsWith("/control")) {
-				handleControl(path);
-				writeText(socket, "OK");
-			} else if (path.startsWith("/state")) {
-				serveState(socket, path, headOnly);
-			} else if (path.startsWith("/chart-video")) {
-				serveVideo(socket, true, headOnly);
-			} else if (path.startsWith("/video")) {
-				serveVideo(socket, false, headOnly);
-			} else if (path.startsWith("/stream"))
-				serveStream(socket);
-			else
-				serveIndex(socket);
+			while (running && !socket.isClosed()) {
+				String request = reader.readLine();
+				if (request == null)
+					return;
+				if (request.isEmpty())
+					continue;
+				String[] parts = request.split(" ");
+				if (parts.length < 2)
+					return;
+				boolean headOnly = "HEAD".equals(parts[0]);
+				String path = parts[1];
+				boolean keepAlive = parts.length > 2 && "HTTP/1.1".equals(parts[2]);
+				String header;
+				while ((header = reader.readLine()) != null && !header.isEmpty()) {
+					if ("Connection: close".equalsIgnoreCase(header))
+						keepAlive = false;
+					else if ("Connection: keep-alive".equalsIgnoreCase(header))
+						keepAlive = true;
+				}
+				if (header == null)
+					return;
+
+				if (path.startsWith("/control")) {
+					handleControl(path);
+					writeText(socket, "OK", keepAlive);
+				} else if (path.startsWith("/state")) {
+					serveState(socket, path, headOnly, keepAlive);
+				} else if (path.startsWith("/chart-video")) {
+					serveVideo(socket, true, headOnly);
+					return;
+				} else if (path.startsWith("/video")) {
+					serveVideo(socket, false, headOnly);
+					return;
+				} else if (path.startsWith("/stream")) {
+					if (headOnly) {
+						writeHeaders(socket.getOutputStream(), "200 OK",
+								"multipart/x-mixed-replace; boundary=frame", -1, false);
+						return;
+					}
+					serveStream(socket);
+					return;
+				} else {
+					serveIndex(socket, keepAlive);
+				}
+				if (!keepAlive)
+					return;
+			}
 		} catch (IOException ignored) {
 		} finally {
 			clients.remove(socket);
+			bridgeClients.remove(socket);
 			try { socket.close(); } catch (IOException ignored) { }
 		}
+	}
+
+	private static boolean isEspBridgePeer(Socket socket) {
+		byte[] address = socket.getInetAddress().getAddress();
+		return address.length == 4 && (address[0] & 0xff) == 192 &&
+				(address[1] & 0xff) == 168 && (address[2] & 0xff) == 8 &&
+				(address[3] & 0xff) == 1;
 	}
 
 	private void handleControl(String path) {
@@ -325,18 +471,19 @@ public final class WebViewServer {
 			commandHandler.onCommand(command, value);
 	}
 
-	private void writeText(Socket socket, String text) throws IOException {
+	private void writeText(Socket socket, String text, boolean keepAlive) throws IOException {
 		byte[] body = text.getBytes(StandardCharsets.UTF_8);
 		OutputStream out = socket.getOutputStream();
-		writeHeaders(out, "200 OK", "text/plain; charset=utf-8", body.length);
+		writeHeaders(out, "200 OK", "text/plain; charset=utf-8", body.length, keepAlive);
 		out.write(body);
 		out.flush();
 	}
 
-	private void serveState(Socket socket, String path, boolean headOnly) throws IOException {
+	private void serveState(Socket socket, String path, boolean headOnly,
+			boolean keepAlive) throws IOException {
 		StateProvider provider = stateProvider;
 		if (provider == null) {
-			writeText(socket, "No state provider");
+			writeText(socket, "No state provider", keepAlive);
 			return;
 		}
 		long generation = queryLong(path, "generation", -1L);
@@ -344,7 +491,8 @@ public final class WebViewServer {
 		int from = (int) Math.max(0L, Math.min(Integer.MAX_VALUE, requestedFrom));
 		byte[] body = provider.getState(generation, from).getBytes(StandardCharsets.UTF_8);
 		OutputStream out = socket.getOutputStream();
-		writeHeaders(out, "200 OK", "application/json; charset=utf-8", body.length);
+		writeHeaders(out, "200 OK", "application/json; charset=utf-8", body.length,
+				keepAlive);
 		if (!headOnly)
 			out.write(body);
 		out.flush();
@@ -355,14 +503,15 @@ public final class WebViewServer {
 		VideoData video = provider == null ? null : provider.open(chart);
 		if (video == null) {
 			byte[] message = "No video ready".getBytes(StandardCharsets.US_ASCII);
-			writeHeaders(socket.getOutputStream(), "404 Not Found", "text/plain", message.length);
+			writeHeaders(socket.getOutputStream(), "404 Not Found", "text/plain",
+					message.length, false);
 			if (!headOnly)
 				socket.getOutputStream().write(message);
 			return;
 		}
 		try (VideoData source = video) {
 			OutputStream out = socket.getOutputStream();
-			writeHeaders(out, "200 OK", "video/mp4", source.length);
+			writeHeaders(out, "200 OK", "video/mp4", source.length, false);
 			if (!headOnly) {
 				byte[] buffer = new byte[64 * 1024];
 				int count;
@@ -373,9 +522,10 @@ public final class WebViewServer {
 		}
 	}
 
-	private void serveIndex(Socket socket) throws IOException {
+	private void serveIndex(Socket socket, boolean keepAlive) throws IOException {
 		OutputStream out = socket.getOutputStream();
-		writeHeaders(out, "200 OK", "text/html; charset=utf-8", indexPage.length);
+		writeHeaders(out, "200 OK", "text/html; charset=utf-8", indexPage.length,
+				keepAlive);
 		out.write(indexPage);
 		out.flush();
 	}
@@ -432,11 +582,13 @@ public final class WebViewServer {
 		return fallback;
 	}
 
-	private static void writeHeaders(OutputStream out, String status, String type, long length)
+	private static void writeHeaders(OutputStream out, String status, String type, long length,
+			boolean keepAlive)
 			throws IOException {
 		String lengthHeader = length >= 0 ? "Content-Length: " + length + "\r\n" : "";
 		out.write(("HTTP/1.1 " + status + "\r\nContent-Type: " + type + "\r\n" +
-				lengthHeader + "Connection: close\r\n\r\n")
+				lengthHeader + "Connection: " + (keepAlive ? "keep-alive" : "close") +
+				"\r\n\r\n")
 				.getBytes(StandardCharsets.US_ASCII));
 	}
 

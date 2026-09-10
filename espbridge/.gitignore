@@ -1,3 +1,6 @@
 /build/
 /sdkconfig
 /target/
+/main/server_cert.pem
+/main/server_key.pem
+/inficam-bridge-ca.crt

@@ -1060,7 +1060,7 @@ public class MainActivity extends BaseActivity {
 			if (useEsp32Connection) {
 				webViewAddress.setText(R.string.msg_esp_connecting);
 				if (esp32BridgeManager != null) {
-					esp32BridgeManager.setWebServerPort(webViewServer.getPort());
+					esp32BridgeManager.setWebServerPort(webViewServer.getBridgePort());
 					startEsp32BridgeWithPermission();
 				}
 			} else {
@@ -1078,7 +1078,7 @@ public class MainActivity extends BaseActivity {
 		}
 	}
 
-	/** Called by SettingsMain; the disabled path intentionally retains legacy Web View behaviour. */
+	/** Called by SettingsMain; the disabled path switches back to direct LAN HTTPS. */
 	public void setUseEsp32Connection(boolean enabled) {
 		useEsp32Connection = enabled;
 		if (esp32BridgeManager == null)
@@ -1087,15 +1087,24 @@ public class MainActivity extends BaseActivity {
 			esp32BridgeManager.setWebServerPort(0);
 			esp32BridgeManager.stop();
 			if (webViewServer != null && webViewServer.isRunning()) {
+				try { webViewServer.setBridgeEnabled(false); }
+				catch (IOException ignored) { }
 				webViewAddress.setText(webViewServer.getUrl());
 				webViewAddress.setVisibility(View.VISIBLE);
 			}
 			return;
 		}
 		if (webViewServer != null && webViewServer.isRunning()) {
-			webViewAddress.setText(R.string.msg_esp_connecting);
-			webViewAddress.setVisibility(View.VISIBLE);
-			esp32BridgeManager.setWebServerPort(webViewServer.getPort());
+			try {
+				int bridgePort = webViewServer.setBridgeEnabled(true);
+				webViewAddress.setText(R.string.msg_esp_connecting);
+				webViewAddress.setVisibility(View.VISIBLE);
+				esp32BridgeManager.setWebServerPort(bridgePort);
+			} catch (IOException e) {
+				Log.w("inficam", "Unable to start ESP Web Control backend", e);
+				webViewAddress.setText(R.string.msg_web_failed);
+				return;
+			}
 		}
 		if (activityStarted)
 			startEsp32BridgeWithPermission();

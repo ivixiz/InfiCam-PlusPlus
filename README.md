@@ -105,8 +105,11 @@ incrementally, and the on-screen Android chart remains hardware accelerated.
 Web Control. The phone joins the `InfiCamBridge` access point and registers the
 running Web Control server with the ESP32-S3. A PC connected to the ESP USB-OTG
 port receives a CDC-NCM Ethernet interface and can then open the fixed address
-**http://192.168.7.1**. The bridge forwards HTTP, controls, state, MJPEG and export
-downloads as TCP bytes; it does not decode or re-encode camera data.
+**https://192.168.7.1**. TLS terminates on the ESP32-S3; behind it, the bridge
+forwards the existing HTTP controls, state, MJPEG and export downloads to the phone
+without decoding or re-encoding camera data. Install the local bridge CA certificate
+from `espbridge/inficam-bridge-ca.crt` on the PC to avoid the browser's private-CA
+warning.
 
 Android displays its nearby Wi-Fi chooser on the first connection. Enable the
 setting, approve `InfiCamBridge`, and start Web Control. The fixed URL is shown in
@@ -139,7 +142,9 @@ The Share action always creates one composed image, regardless of the
 
 Web Control exposes the running app to devices on the same local network. It streams
 the thermal camera, displays measurements and the Time Chart, and provides remote
-control without requiring a cloud service.
+control without requiring a cloud service. Both direct LAN access and the optional
+ESP32-S3 address use HTTPS. The direct server identity is generated once in Android
+Keystore, where its private EC key remains non-exportable.
 
 Available synchronized controls include:
 
@@ -177,13 +182,17 @@ browsers.
 1. Connect the phone and viewing device to the same Wi-Fi/local network.
 2. Connect the thermal camera and wait for the image/calibration to complete.
 3. Press the Web Control button at the bottom of the Android app.
-4. Open the displayed address, normally `http://<phone-ip>:8080/`, in a browser.
+4. Open the displayed address, normally `https://<phone-ip>:8080/`, in a browser.
 5. Press the Web Control button again to stop the local server.
 
 Keep InfiCamPlus in the foreground while using Web Control. If the displayed address
 cannot be reached, verify that both devices are on the same subnet and that the
 router/access point does not use client isolation. VPN, mobile-data, or hotspot
 interfaces may expose a different address than the phone's usual Wi-Fi address.
+Because a public certificate authority cannot validate a changing private LAN IP,
+the browser shows a certificate warning on the first direct connection. Verify that
+the displayed IP belongs to the phone and accept the local certificate exception;
+the same Android Keystore identity is reused until the app data is cleared.
 
 ### User interface and multi-window behavior
 

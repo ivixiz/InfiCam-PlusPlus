@@ -4,13 +4,32 @@ This firmware exposes InfiCam Web Control to a USB-connected computer without
 decoding or re-encoding the stream:
 
 ```
-Android/InfiCam -- Wi-Fi SoftAP --> ESP32-S3 -- USB CDC-NCM --> PC
+Android/InfiCam -- HTTP over WPA2 --> ESP32-S3 -- HTTPS over USB-NCM --> PC
 ```
 
-The fixed PC address is **http://192.168.7.1**. The phone joins
+The fixed PC address is **https://192.168.7.1**. The phone joins
 `InfiCamBridge` (WPA2 password hardcoded in esp src and Inficam App - `5KfHSF21`) and registers the active
-InfiCam `WebViewServer` port with the bridge. HTTP requests, controls, MJPEG,
-state, images and video are forwarded as unchanged TCP bytes.
+InfiCam `WebViewServer` port with the bridge. HTTPS is terminated on the ESP;
+the decrypted HTTP requests, controls, MJPEG, state, images and video are forwarded
+to the phone without decoding or re-encoding their content.
+
+On the first build, `generate_https_certificate.sh` creates a local P-256 certificate
+valid for the fixed IP `192.168.7.1` and `inficam.local`. The generated private key
+and certificates are excluded from Git and reused by subsequent builds. The temporary
+CA signing key is discarded after provisioning. Because public certificate authorities
+cannot issue certificates for private IP addresses, install the generated
+`inficam-bridge-ca.crt` as a trusted website authority on the USB-connected PC.
+Firefox uses its own certificate store: open **Settings → Privacy & Security →
+Certificates → View Certificates → Authorities → Import**, select that file and trust
+it for identifying websites. Without installing the CA, the connection is still
+encrypted after manually accepting the browser warning, but its identity is not
+automatically verified.
+
+Check the CA SHA-256 fingerprint before importing it:
+
+```sh
+openssl x509 -in inficam-bridge-ca.crt -noout -fingerprint -sha256
+```
 
 ## Hardware
 
@@ -29,7 +48,7 @@ Run the script:
 
 The script displays the BOOT/RESET sequence, waits for `/dev/ttyACM*`, builds
 and flashes the firmware, verifies the flash, waits for USB-NCM, and checks the
-fixed HTTP address. An explicit serial port can be supplied if several boards
+fixed HTTPS address. An explicit serial port can be supplied if several boards
 are connected:
 
 ```sh
@@ -39,6 +58,7 @@ are connected:
 For a manual ESP-IDF 6.0 or newer build:
 
 ```sh
+./generate_https_certificate.sh
 . "$IDF_PATH/export.sh"
 idf.py set-target esp32s3
 idf.py build
@@ -62,7 +82,7 @@ The two isolated subnets are:
 - `192.168.7.0/24` — USB NCM, with ESP at `.1` and the PC normally at `.2`.
 
 The USB DHCP server intentionally does not advertise a default Internet route.
-An HTTP 503 response at the fixed address means the USB side is working but the
+An HTTPS 503 response at the fixed address means the USB side is working but the
 phone has not yet enabled Web Control or completed registration.
 
 The old Rust hello-world skeleton is intentionally superseded by ESP-IDF C:

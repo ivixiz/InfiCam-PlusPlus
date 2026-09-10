@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 usage() {
-    printf 'Usage: %s <IDF_PATH> <IDF_TOOLS_PATH> [SERIAL_PORT]\n' "$0" >&2
+    printf 'Usage: %s <ESP_IDF_PATH_FOLDER> <IDF_TOOLS_PATH_FOLDER> [SERIAL_PORT]\n' "$0" >&2
     printf '\nExample:\n' >&2
     printf '  %s ~/esp/esp-idf ~/.espressif /dev/ttyACM0\n' "$0" >&2
     exit 2
@@ -18,7 +18,9 @@ IDF_TOOLS_PATH="$(realpath -m -- "$2")"
 SERIAL_PORT="${3:-}"
 
 BOOT_TIMEOUT_SECONDS=60
-NCM_TIMEOUT_SECONDS=45
+# Some Linux hosts take longer to tear down USB-Serial/JTAG and enumerate the
+# composite CDC-NCM firmware device after a manual reset.
+NCM_TIMEOUT_SECONDS=90
 
 fail() {
 	printf '\nERROR: %s\n' "$*" >&2
@@ -79,6 +81,8 @@ wait_for_ncm() {
 [[ -d "$IDF_TOOLS_PATH" ]] ||
 	fail "ESP-IDF tools not found at $IDF_TOOLS_PATH"
 
+"$PROJECT_DIR/generate_https_certificate.sh"
+
 printf '%s\n' \
 	'InfiCam ESP32-S3 programmer' \
 	'============================' \
@@ -105,11 +109,14 @@ source "$IDF_PATH/export.sh"
 set -u
 
 cd "$PROJECT_DIR"
-if [[ -f build/CMakeCache.txt ]] &&
-	! grep -Fq "$IDF_PATH" build/CMakeCache.txt; then
+if [[ -f build/CMakeCache.txt ]] && {
+	! grep -Fq "$IDF_PATH" build/CMakeCache.txt ||
+	! grep -Fq "CMAKE_HOME_DIRECTORY:INTERNAL=$PROJECT_DIR" build/CMakeCache.txt;
+}; then
 	printf '%s\n' \
 		'' \
-		'ESP-IDF was moved since the previous build; refreshing generated build files...'
+		'ESP-IDF or the project was moved since the previous build;' \
+		'refreshing generated build files...'
 	idf.py fullclean
 fi
 if [[ ! -f sdkconfig ]] || ! grep -q '^CONFIG_IDF_TARGET="esp32s3"$' sdkconfig; then
@@ -129,26 +136,27 @@ if ! wait_for_ncm 5; then
 		fail "USB-NCM did not appear after flashing/reset."
 fi
 
-printf 'USB-NCM device detected. Waiting for http://192.168.7.1 ...\n'
-HTTP_CODE="000"
+printf 'USB-NCM device detected. Waiting for https://192.168.7.1 ...\n'
+HTTPS_CODE="000"
 for _ in $(seq 1 20); do
-	HTTP_CODE="$(curl --silent --output /dev/null --write-out '%{http_code}' \
-		--max-time 2 http://192.168.7.1/ 2>/dev/null || true)"
-	if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "503" ]]; then
+	HTTPS_CODE="$(curl --cacert "$PROJECT_DIR/inficam-bridge-ca.crt" \
+		--silent --output /dev/null --write-out '%{http_code}' \
+		--max-time 2 https://192.168.7.1/ 2>/dev/null || true)"
+	if [[ "$HTTPS_CODE" == "200" || "$HTTPS_CODE" == "503" ]]; then
 		break
 	fi
 	sleep 1
 done
 
-if [[ "$HTTP_CODE" == "200" ]]; then
+if [[ "$HTTPS_CODE" == "200" ]]; then
 	printf '%s\n' \
 		'Programming complete: Web Control is connected.' \
-		'Open http://192.168.7.1'
-elif [[ "$HTTP_CODE" == "503" ]]; then
+		'Open https://192.168.7.1'
+elif [[ "$HTTPS_CODE" == "503" ]]; then
 	printf '%s\n' \
 		'Programming complete: the bridge is ready and waiting for the phone.' \
 		'Connect the phone to InfiCam-Bridge and enable Web View.' \
-		'Then open http://192.168.7.1'
+		'Then open https://192.168.7.1'
 else
 	printf '%s\n' \
 		'Programming complete and USB-NCM is present.' \

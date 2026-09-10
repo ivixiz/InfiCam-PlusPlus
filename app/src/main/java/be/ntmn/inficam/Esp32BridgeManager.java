@@ -37,7 +37,7 @@ public final class Esp32BridgeManager implements AutoCloseable {
 	public static final String PASSWORD = "5KfHSF21";
 	public static final String ESP_WIFI_ADDRESS = "192.168.8.1";
 	public static final int REGISTRATION_PORT = 7777;
-	public static final String PUBLIC_URL = "http://192.168.7.1";
+	public static final String PUBLIC_URL = "https://192.168.7.1";
 
 	public enum State { DISCONNECTED, CONNECTING, REGISTERING, CONNECTED, ERROR }
 
