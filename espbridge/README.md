@@ -4,12 +4,15 @@ This firmware exposes InfiCam Web Control to a USB-connected computer without
 decoding or re-encoding the stream:
 
 ```
-Android/InfiCam -- HTTP over WPA2 --> ESP32-S3 -- HTTPS over USB-NCM --> PC
+Android/InfiCam -- HTTP over WPA2 --> ESP32-S3 -- HTTP/HTTPS over USB-NCM --> PC
 ```
 
-The fixed PC address is **https://192.168.7.1**. The phone joins
+The fixed PC address is **http://192.168.7.1** by default, or
+**https://192.168.7.1** when **Use encrypted HTTPS for connection** is enabled in
+InfiCam. The phone joins
 `InfiCamBridge` (WPA2 password hardcoded in esp src and Inficam App - `5KfHSF21`) and registers the active
-InfiCam `WebViewServer` port with the bridge. HTTPS is terminated on the ESP;
+InfiCam `WebViewServer` port and selected transport with the bridge. Optional HTTPS
+is terminated on the ESP;
 the decrypted HTTP requests, controls, MJPEG, state, images and video are forwarded
 to the phone without decoding or re-encoding their content.
 
@@ -82,7 +85,7 @@ The two isolated subnets are:
 - `192.168.7.0/24` — USB NCM, with ESP at `.1` and the PC normally at `.2`.
 
 The USB DHCP server intentionally does not advertise a default Internet route.
-An HTTPS 503 response at the fixed address means the USB side is working but the
+An HTTP or HTTPS 503 response at the fixed address means the USB side is working but the
 phone has not yet enabled Web Control or completed registration.
 
 The old Rust hello-world skeleton is intentionally superseded by ESP-IDF C:

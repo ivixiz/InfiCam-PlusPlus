@@ -37,6 +37,10 @@ public final class WebViewServer {
 	public interface VideoProvider {
 		VideoData open(boolean chart) throws IOException;
 	}
+	public interface SharedFileProvider {
+		SharedFileData open(long id) throws IOException;
+		void complete(long id);
+	}
 	public static final class VideoData implements AutoCloseable {
 		private final InputStream input;
 		private final long length;
@@ -44,6 +48,24 @@ public final class WebViewServer {
 		public VideoData(InputStream input, long length) {
 			this.input = input;
 			this.length = length;
+		}
+
+		@Override public void close() throws IOException { input.close(); }
+	}
+	public static final class SharedFileData implements AutoCloseable {
+		private final InputStream input;
+		private final long length;
+		private final String mimeType;
+		private final String name;
+		private final long id;
+
+		public SharedFileData(InputStream input, long length, String mimeType, String name,
+				long id) {
+			this.input = input;
+			this.length = length;
+			this.mimeType = mimeType;
+			this.name = name;
+			this.id = id;
 		}
 
 		@Override public void close() throws IOException { input.close(); }
@@ -61,6 +83,7 @@ public final class WebViewServer {
 	private volatile byte[] latestJpeg;
 	private volatile long frameNumber;
 	private volatile boolean running;
+	private volatile boolean encryptedHttps;
 	private volatile ServerSocket serverSocket;
 	private volatile ServerSocket bridgeServerSocket;
 	private volatile int port;
@@ -74,6 +97,7 @@ public final class WebViewServer {
 	private volatile CommandHandler commandHandler;
 	private volatile StateProvider stateProvider;
 	private volatile VideoProvider videoProvider;
+	private volatile SharedFileProvider sharedFileProvider;
 
 	public WebViewServer(Context context) {
 		try {
@@ -90,26 +114,39 @@ public final class WebViewServer {
 
 	public void setStateProvider(StateProvider provider) { stateProvider = provider; }
 	public void setVideoProvider(VideoProvider provider) { videoProvider = provider; }
+	public void setSharedFileProvider(SharedFileProvider provider) { sharedFileProvider = provider; }
 
 	public synchronized String start() throws IOException {
-		return start(false);
+		return start(false, true);
 	}
 
 	/** Starts before a local address exists when the ESP bridge is still joining its SoftAP. */
 	public synchronized String start(boolean allowNoLocalAddress) throws IOException {
+		return start(allowNoLocalAddress, true);
+	}
+
+	/** Starts either a plain HTTP or TLS listener according to the user setting. */
+	public synchronized String start(boolean allowNoLocalAddress, boolean encryptedHttps)
+			throws IOException {
 		if (running)
 			return getUrl();
 		if (!allowNoLocalAddress && getLocalIp() == null)
 			throw new IOException("No local network address");
-		SSLServerSocketFactory socketFactory =
-				WebViewTlsIdentity.createContext().getServerSocketFactory();
+		SSLServerSocketFactory socketFactory = encryptedHttps ?
+				WebViewTlsIdentity.createContext().getServerSocketFactory() : null;
 		IOException lastError = null;
 		for (int candidate = FIRST_PORT; candidate <= LAST_PORT; ++candidate) {
 			try {
-				SSLServerSocket secureSocket = (SSLServerSocket) socketFactory.createServerSocket(
-						candidate, 8, InetAddress.getByName("0.0.0.0"));
-				WebViewTlsIdentity.configure(secureSocket);
-				serverSocket = secureSocket;
+				if (encryptedHttps) {
+					SSLServerSocket secureSocket = (SSLServerSocket)
+							socketFactory.createServerSocket(candidate, 8,
+									InetAddress.getByName("0.0.0.0"));
+					WebViewTlsIdentity.configure(secureSocket);
+					serverSocket = secureSocket;
+				} else {
+					serverSocket = new ServerSocket(candidate, 8,
+							InetAddress.getByName("0.0.0.0"));
+				}
 				port = candidate;
 				break;
 			} catch (IOException e) {
@@ -118,6 +155,7 @@ public final class WebViewServer {
 		}
 		if (serverSocket == null)
 			throw lastError == null ? new IOException("Unable to bind web server") : lastError;
+		this.encryptedHttps = encryptedHttps;
 		if (allowNoLocalAddress) {
 			try {
 				openBridgeListener();
@@ -133,9 +171,9 @@ public final class WebViewServer {
 		encoderThread = new Thread(this::encodeLoop, "InfiCam web encoder");
 		encoderThread.setDaemon(true);
 		encoderThread.start();
-		ServerSocket secureListener = serverSocket;
-		acceptThread = new Thread(() -> acceptLoop(secureListener, false),
-				"InfiCam HTTPS server");
+		ServerSocket directListener = serverSocket;
+		acceptThread = new Thread(() -> acceptLoop(directListener, false),
+				"InfiCam " + (encryptedHttps ? "HTTPS" : "HTTP") + " server");
 		acceptThread.setDaemon(true);
 		acceptThread.start();
 		if (bridgeServerSocket != null)
@@ -224,8 +262,11 @@ public final class WebViewServer {
 
 	public String getUrl() {
 		String ip = getLocalIp();
-		return "https://" + (ip == null ? "127.0.0.1" : ip) + ":" + port;
+		return (encryptedHttps ? "https://" : "http://") +
+				(ip == null ? "127.0.0.1" : ip) + ":" + port;
 	}
+
+	public boolean isEncryptedHttps() { return encryptedHttps; }
 
 	/** True only when a browser is watching and the encoder can accept a new frame. */
 	public boolean wantsFrame() {
@@ -421,6 +462,9 @@ public final class WebViewServer {
 				} else if (path.startsWith("/video")) {
 					serveVideo(socket, false, headOnly);
 					return;
+				} else if (path.startsWith("/shared-file")) {
+					serveSharedFile(socket, path, headOnly);
+					return;
 				} else if (path.startsWith("/stream")) {
 					if (headOnly) {
 						writeHeaders(socket.getOutputStream(), "200 OK",
@@ -522,6 +566,36 @@ public final class WebViewServer {
 		}
 	}
 
+	private void serveSharedFile(Socket socket, String path, boolean headOnly) throws IOException {
+		SharedFileProvider provider = sharedFileProvider;
+		long id = queryLong(path, "id", -1L);
+		SharedFileData file = provider == null || id < 0 ? null : provider.open(id);
+		if (file == null) {
+			byte[] message = "Shared file is no longer available"
+					.getBytes(StandardCharsets.UTF_8);
+			writeHeaders(socket.getOutputStream(), "404 Not Found",
+					"text/plain; charset=utf-8", message.length, false);
+			if (!headOnly) socket.getOutputStream().write(message);
+			return;
+		}
+		boolean completed = false;
+		try (SharedFileData source = file) {
+			OutputStream out = socket.getOutputStream();
+			writeDownloadHeaders(out, source.mimeType, source.length, source.name);
+			if (!headOnly) {
+				byte[] buffer = new byte[64 * 1024];
+				int count;
+				while ((count = source.input.read(buffer)) != -1)
+					out.write(buffer, 0, count);
+				out.flush();
+				completed = true;
+			}
+		} finally {
+			/* A failed/interrupted transfer remains queued so the browser can retry. */
+			if (completed && provider != null) provider.complete(file.id);
+		}
+	}
+
 	private void serveIndex(Socket socket, boolean keepAlive) throws IOException {
 		OutputStream out = socket.getOutputStream();
 		writeHeaders(out, "200 OK", "text/html; charset=utf-8", indexPage.length,
@@ -590,6 +664,41 @@ public final class WebViewServer {
 				lengthHeader + "Connection: " + (keepAlive ? "keep-alive" : "close") +
 				"\r\n\r\n")
 				.getBytes(StandardCharsets.US_ASCII));
+	}
+
+	private static void writeDownloadHeaders(OutputStream out, String type, long length,
+			String filename) throws IOException {
+		String disposition = "attachment; filename=\"" + asciiFilename(filename) +
+				"\"; filename*=UTF-8''" + rfc5987(filename);
+		out.write(("HTTP/1.1 200 OK\r\nContent-Type: " + type + "\r\n" +
+				"Content-Length: " + length + "\r\nContent-Disposition: " + disposition +
+				"\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n")
+				.getBytes(StandardCharsets.US_ASCII));
+	}
+
+	private static String asciiFilename(String value) {
+		StringBuilder result = new StringBuilder(value.length());
+		for (int i = 0; i < value.length(); ++i) {
+			char c = value.charAt(i);
+			result.append(c >= 32 && c < 127 && c != '"' && c != '\\' ? c : '_');
+		}
+		return result.length() == 0 ? "shared-file" : result.toString();
+	}
+
+	private static String rfc5987(String value) {
+		byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+		StringBuilder result = new StringBuilder(bytes.length);
+		final char[] hex = "0123456789ABCDEF".toCharArray();
+		for (byte item : bytes) {
+			int c = item & 0xff;
+			if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+					(c >= '0' && c <= '9') || "!#$&+-.^_`|~".indexOf(c) >= 0) {
+				result.append((char)c);
+			} else {
+				result.append('%').append(hex[c >>> 4]).append(hex[c & 15]);
+			}
+		}
+		return result.toString();
 	}
 
 	private static String getLocalIp() {

@@ -37,7 +37,7 @@ public final class Esp32BridgeManager implements AutoCloseable {
 	public static final String PASSWORD = "5KfHSF21";
 	public static final String ESP_WIFI_ADDRESS = "192.168.8.1";
 	public static final int REGISTRATION_PORT = 7777;
-	public static final String PUBLIC_URL = "https://192.168.7.1";
+	private static final String PUBLIC_ADDRESS = "192.168.7.1";
 
 	public enum State { DISCONNECTED, CONNECTING, REGISTERING, CONNECTED, ERROR }
 
@@ -65,6 +65,7 @@ public final class Esp32BridgeManager implements AutoCloseable {
 	private volatile boolean started;
 	private volatile boolean closed;
 	private volatile int serverPort;
+	private volatile boolean encryptedHttps;
 	private volatile Network activeNetwork;
 	private volatile Socket registrationSocket;
 	private BridgeNetworkCallback networkCallback;
@@ -116,10 +117,23 @@ public final class Esp32BridgeManager implements AutoCloseable {
 		notifyState(State.DISCONNECTED, null);
 	}
 
+	public static String getPublicUrl(boolean encryptedHttps) {
+		return (encryptedHttps ? "https://" : "http://") + PUBLIC_ADDRESS;
+	}
+
 	/** A zero port suspends registration while retaining the Wi-Fi network request. */
 	public void setWebServerPort(int port) {
-		serverPort = port > 0 && port <= 65535 ? port : 0;
+		setWebServer(port, encryptedHttps);
+	}
+
+	/** Atomically changes the phone backend and the browser-facing ESP transport. */
+	public void setWebServer(int port, boolean encryptedHttps) {
+		int normalizedPort = port > 0 && port <= 65535 ? port : 0;
 		synchronized (lock) {
+			if (serverPort == normalizedPort && this.encryptedHttps == encryptedHttps)
+				return;
+			serverPort = normalizedPort;
+			this.encryptedHttps = encryptedHttps;
 			closeRegistrationSocketLocked();
 			if (started && activeNetwork != null && serverPort != 0)
 				startRegistrationWorkerLocked();
@@ -285,6 +299,7 @@ public final class Esp32BridgeManager implements AutoCloseable {
 			while (!closed) {
 				Network network = activeNetwork;
 				int port = serverPort;
+				boolean encrypted = encryptedHttps;
 				if (!started || network == null || port == 0)
 					return;
 				notifyState(State.REGISTERING, "Registering Web Control");
@@ -298,13 +313,19 @@ public final class Esp32BridgeManager implements AutoCloseable {
 							socket.getOutputStream(), StandardCharsets.US_ASCII));
 					BufferedReader input = new BufferedReader(new InputStreamReader(
 							socket.getInputStream(), StandardCharsets.US_ASCII));
-					output.write("REGISTER 1 " + port + "\n");
+					output.write("REGISTER 2 " + port + " " + (encrypted ? 1 : 0) + "\n");
 					output.flush();
 					String response = input.readLine();
 					if (response == null || !response.startsWith("OK "))
 						throw new IOException("ESP rejected registration");
-					notifyState(State.CONNECTED, PUBLIC_URL);
-					while (started && activeNetwork == network && serverPort == port) {
+					String expectedUrl = getPublicUrl(encrypted);
+					String registeredUrl = response.substring(3).trim();
+					if (!registeredUrl.equals(expectedUrl) &&
+							!registeredUrl.equals(expectedUrl + "/"))
+						throw new IOException("ESP registered unexpected transport");
+					notifyState(State.CONNECTED, expectedUrl);
+					while (started && activeNetwork == network && serverPort == port &&
+							encryptedHttps == encrypted) {
 						Thread.sleep(KEEPALIVE_DELAY_MS);
 						output.write("PING\n");
 						output.flush();
@@ -315,7 +336,8 @@ public final class Esp32BridgeManager implements AutoCloseable {
 					Thread.currentThread().interrupt();
 					return;
 				} catch (IOException e) {
-					if (started && activeNetwork == network && serverPort == port) {
+					if (started && activeNetwork == network && serverPort == port &&
+							encryptedHttps == encrypted) {
 						Log.d(TAG, "Registration retry", e);
 						notifyState(State.REGISTERING, "ESP link interrupted; reconnecting");
 						try { Thread.sleep(RETRY_DELAY_MS); }

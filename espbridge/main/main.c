@@ -3,7 +3,7 @@
  *
  * Wi-Fi side: local SoftAP used by the Android phone.
  * USB side: CDC-NCM Ethernet with a fixed address and DHCP for the PC.
- * Data path: HTTPS termination followed by TCP forwarding to the phone;
+ * Data path: optional HTTPS termination followed by TCP forwarding to the phone;
  * image/video data is never decoded or re-encoded.
  */
 
@@ -41,6 +41,7 @@
 #define BRIDGE_WIFI_SSID       "InfiCamBridge"
 #define BRIDGE_WIFI_PASSWORD   "5KfHSF21"
 #define REGISTRATION_PORT      7777
+#define PUBLIC_HTTP_PORT       80
 #define PUBLIC_HTTPS_PORT      443
 #define MAX_PROXY_CONNECTIONS  8
 #define PROXY_BUFFER_SIZE      8192
@@ -67,6 +68,7 @@ static SemaphoreHandle_t s_proxy_slots;
 static esp_tls_cfg_server_t s_tls_config;
 static uint32_t s_phone_address;
 static uint16_t s_phone_port;
+static bool s_public_https;
 static uint32_t s_registration_generation;
 static int s_registration_socket = -1;
 
@@ -156,8 +158,14 @@ static void registration_task(void *argument)
 
     unsigned protocol_version = 0;
     unsigned web_port = 0;
-    if (sscanf(line, "REGISTER %u %u", &protocol_version, &web_port) != 2 ||
-        protocol_version != 1 || web_port == 0 || web_port > 65535) {
+    unsigned encrypted_https = 1;
+    const int fields = sscanf(line, "REGISTER %u %u %u", &protocol_version,
+                              &web_port, &encrypted_https);
+    const bool legacy_registration = fields == 2 && protocol_version == 1;
+    const bool selectable_registration = fields == 3 && protocol_version == 2 &&
+                                         encrypted_https <= 1;
+    if ((!legacy_registration && !selectable_registration) ||
+        web_port == 0 || web_port > 65535) {
         static const char error_response[] = "ERROR invalid registration\n";
         send_all(socket_fd, error_response, sizeof(error_response) - 1);
         goto done;
@@ -169,6 +177,7 @@ static void registration_task(void *argument)
     s_registration_socket = socket_fd;
     s_phone_address = peer.sin_addr.s_addr;
     s_phone_port = (uint16_t)web_port;
+    s_public_https = encrypted_https != 0;
     generation = ++s_registration_generation;
     xSemaphoreGive(s_registration_lock);
     if (old_socket >= 0 && old_socket != socket_fd) {
@@ -177,9 +186,14 @@ static void registration_task(void *argument)
 
     char address[INET_ADDRSTRLEN];
     inet_ntoa_r(peer.sin_addr, address, sizeof(address));
-    ESP_LOGI(TAG, "InfiCam registered at %s:%u", address, web_port);
-    static const char ok_response[] = "OK https://192.168.7.1/\n";
-    if (send_all(socket_fd, ok_response, sizeof(ok_response) - 1) != 0) {
+    ESP_LOGI(TAG, "InfiCam registered at %s:%u; public transport: %s", address,
+             web_port, encrypted_https ? "HTTPS" : "HTTP");
+    char ok_response[64];
+    const int ok_length = snprintf(ok_response, sizeof(ok_response),
+                                   "OK %s://192.168.7.1/\n",
+                                   encrypted_https ? "https" : "http");
+    if (ok_length <= 0 || ok_length >= (int)sizeof(ok_response) ||
+        send_all(socket_fd, ok_response, (size_t)ok_length) != 0) {
         goto done;
     }
 
@@ -250,11 +264,13 @@ static void registration_listener_task(void *argument)
     }
 }
 
-static bool get_registered_phone(struct sockaddr_in *target, uint32_t *generation)
+static bool get_registered_phone(struct sockaddr_in *target, uint32_t *generation,
+                                 bool encrypted_https)
 {
     bool available;
     xSemaphoreTake(s_registration_lock, portMAX_DELAY);
-    available = s_phone_address != 0 && s_phone_port != 0;
+    available = s_phone_address != 0 && s_phone_port != 0 &&
+                s_public_https == encrypted_https;
     if (available) {
         memset(target, 0, sizeof(*target));
         target->sin_family = AF_INET;
@@ -305,7 +321,26 @@ static int tls_send_all(esp_tls_t *tls, int socket_fd,
     return 0;
 }
 
-static void send_unavailable(esp_tls_t *tls, int client)
+typedef struct {
+    int socket_fd;
+    bool encrypted_https;
+} proxy_client_t;
+
+static int browser_send_all(esp_tls_t *tls, int socket_fd, bool encrypted_https,
+                            const void *data, size_t length)
+{
+    return encrypted_https ? tls_send_all(tls, socket_fd, data, length) :
+                             send_all(socket_fd, data, length);
+}
+
+static ssize_t browser_receive(esp_tls_t *tls, int socket_fd, bool encrypted_https,
+                               void *data, size_t length)
+{
+    return encrypted_https ? esp_tls_conn_read(tls, data, length) :
+                             recv(socket_fd, data, length, 0);
+}
+
+static void send_unavailable(esp_tls_t *tls, int client, bool encrypted_https)
 {
     static const char response[] =
         "HTTP/1.1 503 Service Unavailable\r\n"
@@ -319,13 +354,17 @@ static void send_unavailable(esp_tls_t *tls, int client)
     setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
                &receive_timeout, sizeof(receive_timeout));
     char request[1024];
-    (void)esp_tls_conn_read(tls, request, sizeof(request));
-    (void)tls_send_all(tls, client, response, sizeof(response) - 1);
+    (void)browser_receive(tls, client, encrypted_https, request, sizeof(request));
+    (void)browser_send_all(tls, client, encrypted_https,
+                           response, sizeof(response) - 1);
 }
 
 static void proxy_connection_task(void *argument)
 {
-    const int client = (int)(intptr_t)argument;
+    proxy_client_t *connection = argument;
+    const int client = connection->socket_fd;
+    const bool encrypted_https = connection->encrypted_https;
+    free(connection);
     int phone = -1;
     esp_tls_t *tls = NULL;
     uint8_t *buffer = NULL;
@@ -333,30 +372,32 @@ static void proxy_connection_task(void *argument)
     uint32_t generation;
 
     configure_socket(client);
-    const struct timeval handshake_timeout = { .tv_sec = 10, .tv_usec = 0 };
-    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
-               &handshake_timeout, sizeof(handshake_timeout));
-    tls = esp_tls_init();
-    if (tls == NULL ||
-        esp_tls_server_session_create(&s_tls_config, client, tls) != ESP_OK) {
-        ESP_LOGW(TAG, "TLS handshake failed");
-        goto done;
+    if (encrypted_https) {
+        const struct timeval handshake_timeout = { .tv_sec = 10, .tv_usec = 0 };
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
+                   &handshake_timeout, sizeof(handshake_timeout));
+        tls = esp_tls_init();
+        if (tls == NULL ||
+            esp_tls_server_session_create(&s_tls_config, client, tls) != ESP_OK) {
+            ESP_LOGW(TAG, "TLS handshake failed");
+            goto done;
+        }
     }
 
-    if (!get_registered_phone(&target, &generation)) {
-        send_unavailable(tls, client);
+    if (!get_registered_phone(&target, &generation, encrypted_https)) {
+        send_unavailable(tls, client, encrypted_https);
         goto done;
     }
 
     phone = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     if (phone < 0) {
-        send_unavailable(tls, client);
+        send_unavailable(tls, client, encrypted_https);
         goto done;
     }
     configure_socket(phone);
     if (connect(phone, (struct sockaddr *)&target, sizeof(target)) != 0) {
         ESP_LOGW(TAG, "Cannot connect to registered phone: errno %d", errno);
-        send_unavailable(tls, client);
+        send_unavailable(tls, client, encrypted_https);
         goto done;
     }
 
@@ -366,7 +407,8 @@ static void proxy_connection_task(void *argument)
     }
 
     for (;;) {
-        const bool tls_data_pending = esp_tls_get_bytes_avail(tls) > 0;
+        const bool tls_data_pending = encrypted_https &&
+                                      esp_tls_get_bytes_avail(tls) > 0;
         fd_set read_set;
         FD_ZERO(&read_set);
         FD_SET(client, &read_set);
@@ -390,18 +432,21 @@ static void proxy_connection_task(void *argument)
         }
         bool failed = false;
         if (tls_data_pending || FD_ISSET(client, &read_set)) {
-            const ssize_t length = esp_tls_conn_read(tls, buffer, PROXY_BUFFER_SIZE);
+            const ssize_t length = browser_receive(tls, client, encrypted_https,
+                                                   buffer, PROXY_BUFFER_SIZE);
             if (length > 0) {
                 failed = send_all(phone, buffer, (size_t)length) != 0;
-            } else if (length != ESP_TLS_ERR_SSL_WANT_READ &&
-                       length != ESP_TLS_ERR_SSL_WANT_WRITE) {
+            } else if (!encrypted_https ||
+                       (length != ESP_TLS_ERR_SSL_WANT_READ &&
+                        length != ESP_TLS_ERR_SSL_WANT_WRITE)) {
                 failed = true;
             }
         }
         if (!failed && FD_ISSET(phone, &read_set)) {
             const ssize_t length = recv(phone, buffer, PROXY_BUFFER_SIZE, 0);
             failed = length <= 0 ||
-                     tls_send_all(tls, client, buffer, (size_t)length) != 0;
+                     browser_send_all(tls, client, encrypted_https,
+                                      buffer, (size_t)length) != 0;
         }
         if (failed) {
             break;
@@ -425,7 +470,9 @@ done:
 
 static void proxy_listener_task(void *argument)
 {
-    (void)argument;
+    const bool encrypted_https = (intptr_t)argument != 0;
+    const uint16_t public_port = encrypted_https ? PUBLIC_HTTPS_PORT : PUBLIC_HTTP_PORT;
+    const char *transport = encrypted_https ? "HTTPS" : "HTTP";
     for (;;) {
         int listener = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
         if (listener < 0) {
@@ -436,17 +483,18 @@ static void proxy_listener_task(void *argument)
         setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
         struct sockaddr_in address = {
             .sin_family = AF_INET,
-            .sin_port = htons(PUBLIC_HTTPS_PORT),
+            .sin_port = htons(public_port),
         };
         IP4_ADDR((ip4_addr_t *)&address.sin_addr, USB_IP_A, USB_IP_B, USB_IP_C, USB_IP_D);
         if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
             listen(listener, MAX_PROXY_CONNECTIONS) != 0) {
-            ESP_LOGE(TAG, "HTTPS proxy listener failed: errno %d", errno);
+            ESP_LOGE(TAG, "%s proxy listener failed: errno %d", transport, errno);
             close(listener);
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
-        ESP_LOGI(TAG, "Web Control proxy available at https://192.168.7.1");
+        ESP_LOGI(TAG, "%s Web Control listener available at %s://192.168.7.1",
+                 transport, encrypted_https ? "https" : "http");
         for (;;) {
             int client = accept(listener, NULL, NULL);
             if (client < 0) {
@@ -456,14 +504,23 @@ static void proxy_listener_task(void *argument)
                 break;
             }
             if (xSemaphoreTake(s_proxy_slots, 0) != pdTRUE) {
-                /* A TLS response requires a per-client handshake and task. Reject overload
-                 * immediately instead of blocking the listener for every other browser. */
+                /* Reject overload immediately instead of blocking every other browser. */
                 shutdown(client, SHUT_RDWR);
                 close(client);
                 continue;
             }
-            if (xTaskCreate(proxy_connection_task, "tls_proxy", 8192,
-                            (void *)(intptr_t)client, 4, NULL) != pdPASS) {
+            proxy_client_t *connection = malloc(sizeof(*connection));
+            if (connection == NULL) {
+                close(client);
+                xSemaphoreGive(s_proxy_slots);
+                continue;
+            }
+            connection->socket_fd = client;
+            connection->encrypted_https = encrypted_https;
+            if (xTaskCreate(proxy_connection_task,
+                            encrypted_https ? "tls_proxy" : "http_proxy", 8192,
+                            connection, 4, NULL) != pdPASS) {
+                free(connection);
                 close(client);
                 xSemaphoreGive(s_proxy_slots);
             }
@@ -655,8 +712,11 @@ void app_main(void)
 
     BaseType_t registration_started = xTaskCreate(
         registration_listener_task, "registration", 4096, NULL, 5, NULL);
-    BaseType_t proxy_started = xTaskCreate(
-        proxy_listener_task, "web_proxy", 4096, NULL, 5, NULL);
-    ESP_ERROR_CHECK(registration_started == pdPASS && proxy_started == pdPASS ?
+    BaseType_t http_proxy_started = xTaskCreate(
+        proxy_listener_task, "http_listener", 4096, (void *)(intptr_t)0, 5, NULL);
+    BaseType_t https_proxy_started = xTaskCreate(
+        proxy_listener_task, "https_listener", 4096, (void *)(intptr_t)1, 5, NULL);
+    ESP_ERROR_CHECK(registration_started == pdPASS &&
+                    http_proxy_started == pdPASS && https_proxy_started == pdPASS ?
                     ESP_OK : ESP_ERR_NO_MEM);
 }

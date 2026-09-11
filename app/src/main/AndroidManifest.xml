@@ -55,6 +55,14 @@
 				<category android:name="android.intent.category.LAUNCHER" />
 			</intent-filter>
 
+			<!-- Receive photos and arbitrary files selected with Android's Share action. -->
+			<intent-filter>
+				<action android:name="android.intent.action.SEND" />
+				<action android:name="android.intent.action.SEND_MULTIPLE" />
+				<category android:name="android.intent.category.DEFAULT" />
+				<data android:mimeType="*/*" />
+			</intent-filter>
+
 			<intent-filter>
 				<action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
 				<action android:name="android.hardware.usb.action.USB_DEVICE_DETACHED" />

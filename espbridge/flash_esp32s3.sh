@@ -136,27 +136,27 @@ if ! wait_for_ncm 5; then
 		fail "USB-NCM did not appear after flashing/reset."
 fi
 
-printf 'USB-NCM device detected. Waiting for https://192.168.7.1 ...\n'
-HTTPS_CODE="000"
+printf 'USB-NCM device detected. Waiting for http://192.168.7.1 ...\n'
+HTTP_CODE="000"
 for _ in $(seq 1 20); do
-	HTTPS_CODE="$(curl --cacert "$PROJECT_DIR/inficam-bridge-ca.crt" \
+	HTTP_CODE="$(curl \
 		--silent --output /dev/null --write-out '%{http_code}' \
-		--max-time 2 https://192.168.7.1/ 2>/dev/null || true)"
-	if [[ "$HTTPS_CODE" == "200" || "$HTTPS_CODE" == "503" ]]; then
+		--max-time 2 http://192.168.7.1/ 2>/dev/null || true)"
+	if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "503" ]]; then
 		break
 	fi
 	sleep 1
 done
 
-if [[ "$HTTPS_CODE" == "200" ]]; then
+if [[ "$HTTP_CODE" == "200" ]]; then
 	printf '%s\n' \
 		'Programming complete: Web Control is connected.' \
-		'Open https://192.168.7.1'
-elif [[ "$HTTPS_CODE" == "503" ]]; then
+		'Open the HTTP or HTTPS URL displayed by InfiCam.'
+elif [[ "$HTTP_CODE" == "503" ]]; then
 	printf '%s\n' \
 		'Programming complete: the bridge is ready and waiting for the phone.' \
 		'Connect the phone to InfiCam-Bridge and enable Web View.' \
-		'Then open https://192.168.7.1'
+		'Then open the HTTP or HTTPS URL displayed by InfiCam.'
 else
 	printf '%s\n' \
 		'Programming complete and USB-NCM is present.' \

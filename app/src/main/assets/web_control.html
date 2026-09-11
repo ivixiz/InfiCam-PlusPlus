@@ -216,6 +216,12 @@
     .trace-delete { padding: 4px 7px; font-size: 17px; line-height: 1; }
     .trace-table td:last-child, .trace-table th:last-child { text-align: center; }
     #status { min-height: 1.2em; margin-bottom: 5px; color: #bbb; font-size: 13px; }
+    #shared-files {
+      display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;
+      margin: 0 auto 6px; padding: 0 8px;
+    }
+    #shared-files:empty { display: none; }
+    .shared-download { border-color: #4b8; background: #173a2d; color: #fff; }
     @media (max-width: 760px) {
       #viewer.chart-on { grid-template-columns: minmax(0, 1fr); }
       #chart-wrap { min-height: 360px; }
@@ -273,6 +279,7 @@
     <span class="range-value">Max <span id="range-max-value">--</span></span>
   </div>
   <div id="status"></div>
+  <div id="shared-files" aria-live="polite"></div>
 
   <div id="settings-modal" class="modal" onclick="modalBackdrop(event)">
     <div class="modal-card">
@@ -357,6 +364,7 @@
     const chartButton = document.getElementById('chart-button');
     const recordButton = document.getElementById('record');
     const statusLabel = document.getElementById('status');
+    const sharedFilesPanel = document.getElementById('shared-files');
     const paletteButton = document.getElementById('palette-button');
     const lockButton = document.getElementById('lock-button');
     const mirrorButton = document.getElementById('mirror-button');
@@ -403,6 +411,8 @@
     let chartHoldTimer = 0;
     let chartHeld = false;
     let measurementPointer = null;
+    const seenSharedFiles = new Set();
+    let sharedDownloadDelay = 0;
     const waitingStatus = 'Waiting for phone state...';
 
     function sendCommand(name, value = '') {
@@ -670,6 +680,8 @@
         }
         data.count = Number(update.count) || 0;
         meta = update;
+        renderSharedFiles(update.sharedFiles);
+        acceptSharedFiles(update.sharedFiles);
         const cameraGeneration = Number(update.cameraGeneration);
         if (!stateOnline || (lastCameraGeneration !== null &&
             cameraGeneration !== lastCameraGeneration)) {
@@ -1467,6 +1479,59 @@
       link.href = url + '?' + Date.now();
       link.download = name;
       link.click();
+    }
+
+    function triggerSharedDownload(file) {
+      const id = Number(file && file.id);
+      if (!Number.isSafeInteger(id) || id <= 0) return;
+      const name = String(file.name || 'shared-file');
+      const link = document.createElement('a');
+      link.href = '/shared-file?id=' + encodeURIComponent(id);
+      link.download = name;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      statusLabel.textContent = 'Downloading shared file: ' + name;
+    }
+
+    function renderSharedFiles(files) {
+      const available = Array.isArray(files) ? files : [];
+      const signature = available.map(file => String(file && file.id)).join(',');
+      if (sharedFilesPanel.dataset.signature === signature) return;
+      sharedFilesPanel.dataset.signature = signature;
+      sharedFilesPanel.replaceChildren(...available.map(file => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'shared-download';
+        button.textContent = 'Download ' + String(file.name || 'shared file');
+        button.addEventListener('click', () => triggerSharedDownload(file));
+        return button;
+      }));
+    }
+
+    function acceptSharedFiles(files) {
+      if (!Array.isArray(files)) return;
+      for (const file of files) {
+        const id = Number(file && file.id);
+        if (!Number.isSafeInteger(id) || id <= 0 || seenSharedFiles.has(id)) continue;
+        seenSharedFiles.add(id);
+        const delay = sharedDownloadDelay;
+        sharedDownloadDelay += 350;
+        setTimeout(() => {
+          triggerSharedDownload(file);
+          sharedDownloadDelay = Math.max(0, sharedDownloadDelay - 350);
+        }, delay);
+      }
+      /* Keep a long-running Web Control tab bounded without re-downloading currently
+       * queued entries. IDs are timestamp-based and are never reused in a process. */
+      if (seenSharedFiles.size > 256) {
+        const current = new Set(files.map(file => Number(file && file.id)));
+        for (const id of seenSharedFiles) {
+          if (!current.has(id)) seenSharedFiles.delete(id);
+          if (seenSharedFiles.size <= 128) break;
+        }
+      }
     }
 
     async function waitForVideo(url) {

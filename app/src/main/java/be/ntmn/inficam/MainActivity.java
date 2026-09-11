@@ -143,12 +143,16 @@ public class MainActivity extends BaseActivity {
 	private static final int TIME_CHART_BUTTON_RESERVE_DP = 72;
 	private TextView webViewAddress;
 	private WebViewServer webViewServer;
+	private WebShareRelay webShareRelay;
 	private Esp32BridgeManager esp32BridgeManager;
 	private volatile boolean useEsp32Connection;
+	private volatile boolean useEncryptedHttps;
+	private boolean webViewRequested;
 	private boolean esp32PermissionRequestPending;
 	private long lastWebCaptureNs;
 	private static final long WEB_FRAME_INTERVAL_NS = 40000000L; // target camera rate: 25 FPS
 	private static final String WEB_HEX = "0123456789abcdef";
+	private static final String PREF_WEB_SHARE_RESUME = "web_share_resume";
 	private boolean rotate = false;
 	private int orientation = 0;
 	private int preferredScreenOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
@@ -1047,6 +1051,8 @@ public class MainActivity extends BaseActivity {
 		if (webViewServer == null)
 			return;
 		if (webViewServer.isRunning()) {
+			webViewRequested = false;
+			rememberWebViewForShare(false);
 			webViewServer.stop();
 			if (esp32BridgeManager != null)
 				esp32BridgeManager.setWebServerPort(0);
@@ -1055,12 +1061,22 @@ public class MainActivity extends BaseActivity {
 			messageView.showMessage(R.string.msg_web_stopped);
 			return;
 		}
+		webViewRequested = true;
+		if (!startWebView()) webViewRequested = false;
+	}
+
+	private boolean startWebView() {
+		if (webViewServer == null)
+			return false;
+		if (webViewServer.isRunning())
+			return true;
 		try {
-			String url = webViewServer.start(useEsp32Connection);
+			String url = webViewServer.start(useEsp32Connection, useEncryptedHttps);
 			if (useEsp32Connection) {
 				webViewAddress.setText(R.string.msg_esp_connecting);
 				if (esp32BridgeManager != null) {
-					esp32BridgeManager.setWebServerPort(webViewServer.getBridgePort());
+					esp32BridgeManager.setWebServer(webViewServer.getBridgePort(),
+							useEncryptedHttps);
 					startEsp32BridgeWithPermission();
 				}
 			} else {
@@ -1072,13 +1088,42 @@ public class MainActivity extends BaseActivity {
 				messageView.showMessage(R.string.msg_esp_connecting);
 			else
 				messageView.showMessage(getString(R.string.msg_web_started, url));
+			rememberWebViewForShare(true);
+			return true;
 		} catch (IOException e) {
 			messageView.showMessage(R.string.msg_web_failed);
 			Log.w("inficam", "Unable to start Web View", e);
+			return false;
 		}
 	}
 
-	/** Called by SettingsMain; the disabled path switches back to direct LAN HTTPS. */
+	private void handleIncomingShare(Intent intent) {
+		if (webShareRelay == null || intent == null)
+			return;
+		int count = webShareRelay.enqueue(intent);
+		if (count <= 0)
+			return;
+		if (webViewServer != null && !webViewServer.isRunning() &&
+				getSharedPreferences("PREFS", MODE_PRIVATE)
+						.getBoolean(PREF_WEB_SHARE_RESUME, false)) {
+			webViewRequested = true;
+			if (activityStarted) handler.post(this::startWebView);
+		}
+		/* Do not enqueue the same ACTION_SEND again if Android recreates this Activity. */
+		intent.setAction(null);
+		intent.removeExtra(Intent.EXTRA_STREAM);
+		intent.removeExtra(Intent.EXTRA_TEXT);
+		intent.setClipData(null);
+		messageView.showMessage(getResources().getQuantityString(
+				R.plurals.msg_web_share_preparing, count, count));
+	}
+
+	private void rememberWebViewForShare(boolean enabled) {
+		getSharedPreferences("PREFS", MODE_PRIVATE).edit()
+				.putBoolean(PREF_WEB_SHARE_RESUME, enabled).apply();
+	}
+
+	/** Called by SettingsMain; the disabled path switches back to direct LAN access. */
 	public void setUseEsp32Connection(boolean enabled) {
 		useEsp32Connection = enabled;
 		if (esp32BridgeManager == null)
@@ -1099,7 +1144,7 @@ public class MainActivity extends BaseActivity {
 				int bridgePort = webViewServer.setBridgeEnabled(true);
 				webViewAddress.setText(R.string.msg_esp_connecting);
 				webViewAddress.setVisibility(View.VISIBLE);
-				esp32BridgeManager.setWebServerPort(bridgePort);
+				esp32BridgeManager.setWebServer(bridgePort, useEncryptedHttps);
 			} catch (IOException e) {
 				Log.w("inficam", "Unable to start ESP Web Control backend", e);
 				webViewAddress.setText(R.string.msg_web_failed);
@@ -1108,6 +1153,26 @@ public class MainActivity extends BaseActivity {
 		}
 		if (activityStarted)
 			startEsp32BridgeWithPermission();
+	}
+
+	/** Restarts only Web Control when its public transport changes; the camera stays running. */
+	public void setUseEncryptedHttpsConnection(boolean enabled) {
+		boolean changed = useEncryptedHttps != enabled;
+		useEncryptedHttps = enabled;
+		if (esp32BridgeManager != null &&
+				(webViewServer == null || !webViewServer.isRunning()))
+			esp32BridgeManager.setWebServer(0, enabled);
+		if (!changed || webViewServer == null || !webViewServer.isRunning())
+			return;
+
+		webViewServer.stop();
+		if (esp32BridgeManager != null)
+			esp32BridgeManager.setWebServer(0, enabled);
+		if (webViewRequested && !startWebView()) {
+			webViewRequested = false;
+			rememberWebViewForShare(false);
+			buttonWebView.setColorFilter(null);
+		}
 	}
 
 	private void startEsp32BridgeWithPermission() {
@@ -1143,9 +1208,10 @@ public class MainActivity extends BaseActivity {
 				return;
 			webViewAddress.setVisibility(View.VISIBLE);
 			if (state == Esp32BridgeManager.State.CONNECTED) {
-				webViewAddress.setText(Esp32BridgeManager.PUBLIC_URL);
-				messageView.showMessage(getString(R.string.msg_esp_connected,
-						Esp32BridgeManager.PUBLIC_URL));
+				String url = detail == null || detail.isEmpty() ?
+						Esp32BridgeManager.getPublicUrl(useEncryptedHttps) : detail;
+				webViewAddress.setText(url);
+				messageView.showMessage(getString(R.string.msg_esp_connected, url));
 			} else {
 				webViewAddress.setText(detail == null || detail.isEmpty() ?
 						getString(R.string.msg_esp_connecting) : detail);
@@ -1464,6 +1530,8 @@ public class MainActivity extends BaseActivity {
 				.append(",\"vid_res\":").append(main.getInt("vid_res", 6))
 				.append(",\"orientation\":").append(main.getInt("orientation", 0))
 				.append(",\"unit\":").append(main.getInt("unit", 0))
+				.append(",\"use_encrypted_https\":").append(
+						main.getBoolean("use_encrypted_https", false))
 				.append(",\"chart_sample_rate\":").append(webFloat(
 						main.getFloat("chart_sample_rate", 0.1f), 0.1f))
 				.append(",\"chart_average_samples\":").append(
@@ -1479,7 +1547,10 @@ public class MainActivity extends BaseActivity {
 				appendWebColor(json, paletteMap[(paletteMap.length - 1) * i / samples]);
 			}
 		}
-		json.append("]}");
+		json.append("],\"sharedFiles\":");
+		if (webShareRelay == null) json.append("[]");
+		else webShareRelay.appendPendingJson(json);
+		json.append('}');
 		return json.toString();
 	}
 
@@ -2148,6 +2219,35 @@ public class MainActivity extends BaseActivity {
 		webViewServer.setCommandHandler(this::handleWebCommand);
 		webViewServer.setStateProvider(this::buildWebStateJson);
 		webViewServer.setVideoProvider(this::openWebVideo);
+		webShareRelay = new WebShareRelay(getApplicationContext(),
+				new WebShareRelay.Listener() {
+					@Override public void onReady(String name) {
+						handler.post(() -> {
+							if (messageView == null || isFinishing() || isDestroyed()) return;
+							messageView.showMessage(getString(
+									webViewServer != null && webViewServer.isRunning() ?
+											R.string.msg_web_share_ready :
+											R.string.msg_web_share_enable, name));
+						});
+					}
+
+					@Override public void onFailure(String name, Exception error) {
+						Log.w("inficam", "Unable to stage shared file " + name, error);
+						handler.post(() -> {
+							if (messageView != null && !isFinishing() && !isDestroyed())
+								messageView.showMessage(R.string.msg_web_share_failed);
+						});
+					}
+				});
+		webViewServer.setSharedFileProvider(new WebViewServer.SharedFileProvider() {
+			@Override public WebViewServer.SharedFileData open(long id) throws IOException {
+				return webShareRelay == null ? null : webShareRelay.open(id);
+			}
+
+			@Override public void complete(long id) {
+				if (webShareRelay != null) webShareRelay.complete(id);
+			}
+		});
 		esp32BridgeManager = new Esp32BridgeManager(getApplicationContext(),
 				this::onEsp32BridgeState);
 
@@ -2424,6 +2524,14 @@ public class MainActivity extends BaseActivity {
 		/* The initial display callback is not guaranteed to fire after setContentView().
 		 * Apply the portrait/landscape constraints once all control views exist. */
 		updateOrientation();
+		handleIncomingShare(getIntent());
+	}
+
+	@Override
+	protected void onNewIntent(Intent intent) {
+		super.onNewIntent(intent);
+		setIntent(intent);
+		handleIncomingShare(intent);
 	}
 
 	@Override
@@ -2458,6 +2566,10 @@ public class MainActivity extends BaseActivity {
 
 		imgCompressThread = new ImgCompressThread();
 		imgCompressThread.start();
+		if (webViewRequested && webViewServer != null && !webViewServer.isRunning())
+			handler.post(() -> {
+				if (activityStarted && webViewRequested) startWebView();
+			});
 	}
 
 	@Override
@@ -2526,6 +2638,7 @@ public class MainActivity extends BaseActivity {
 
 	@Override
 	protected void onDestroy() {
+		if (isFinishing()) rememberWebViewForShare(false);
 		if (outWeb != null) {
 			outWeb.release();
 			outWeb = null;
@@ -2533,6 +2646,10 @@ public class MainActivity extends BaseActivity {
 		if (esp32BridgeManager != null) {
 			esp32BridgeManager.close();
 			esp32BridgeManager = null;
+		}
+		if (webShareRelay != null) {
+			webShareRelay.close();
+			webShareRelay = null;
 		}
 		surfaceMuxer.release();
 		super.onDestroy();

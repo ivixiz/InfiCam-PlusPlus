@@ -248,6 +248,11 @@ public class SettingsMain extends Settings {
 				new SettingBool("use_esp32_connection", R.string.set_use_esp32_connection, false) {
 					@Override void onSet(boolean value) { act.setUseEsp32Connection(value); }
 				},
+				new SettingBool("use_encrypted_https", R.string.set_use_encrypted_https, false) {
+					@Override void onSet(boolean value) {
+						act.setUseEncryptedHttpsConnection(value);
+					}
+				},
 				settingDefaults,
 		};
 	}
