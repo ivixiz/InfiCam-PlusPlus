@@ -181,8 +181,11 @@ The stream is paced for up to 25 FPS. Actual Web FPS depends on the phone, camer
 Wi-Fi link, and browser. Browser rendering is kept separate from the phone display,
 and stale streams are restarted automatically after a camera reconnection. A lost
 state connection shows `Waiting for phone state...`; the message is cleared as soon
-as polling succeeds again. Controls remain horizontally scrollable on narrow mobile
-browsers.
+as polling succeeds again. On narrow or short touch screens, including browser
+split-screen and phone landscape mode, the controls remain in a sticky horizontally
+scrollable toolbar, the camera fits the remaining viewport, and the chart is reached
+by vertical scrolling. Normal page pinch zoom and scrolling remain enabled whenever
+a measurement drawing tool is not active.
 
 <img width="1193" height="754" alt="screenshot" src="https://github.com/user-attachments/assets/ad32e119-3eff-4608-95eb-742af45d616e" />
 
